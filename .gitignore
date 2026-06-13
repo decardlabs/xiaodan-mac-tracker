@@ -1,0 +1,10 @@
+# 数据库和日志（本地运行数据，不上传）
+activity.db
+tracker.log
+tracker_error.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
