@@ -11,3 +11,9 @@ __pycache__/
 
 # WorkBuddy 工作数据
 .workbuddy/
+
+# 打包产物（由 build.sh 生成，不要上传）
+dist/
+build_assets/source_icon_1024.png
+build_assets/icon.iconset/
+build_assets/icon_candidates/

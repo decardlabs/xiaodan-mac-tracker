@@ -55,7 +55,27 @@ except ImportError:
 # ── 配置 ──────────────────────────────────────────────────────────────────────
 POLL_INTERVAL = 30       # 检测间隔（秒），同时是状态栏刷新间隔
 SLEEP_DETECT_THRESHOLD = POLL_INTERVAL * 3  # 间隔超过此值视为系统休眠
-DB_PATH = os.path.expanduser("~/Documents/xiaodan-mac-tracker/activity.db")
+
+# ── 路径配置（兼容 .app Bundle 和源码运行） ────────────────────────────────
+# 当作为 .app 运行（如 /Applications/XiaoDan.app）时，__file__ 是
+# /Applications/XiaoDan.app/Contents/Resources/tracker.py，APP_ROOT 解析为 .app 根目录
+# 当作为源码运行时（如 ./tracker.py），APP_ROOT 是当前目录
+APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) \
+    if os.path.basename(os.path.dirname(os.path.abspath(__file__))) == "Resources" \
+    else os.path.dirname(os.path.abspath(__file__))
+
+# 用户数据目录（macOS 标准位置）
+APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/XiaoDan")
+os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
+DB_PATH = os.path.join(APP_SUPPORT_DIR, "activity.db")
+# 旧数据库自动迁移（如有）
+_OLD_DB = os.path.expanduser("~/Documents/xiaodan-mac-tracker/activity.db")
+if os.path.exists(_OLD_DB) and not os.path.exists(DB_PATH):
+    import shutil
+    try:
+        shutil.copy2(_OLD_DB, DB_PATH)
+    except Exception:
+        pass
 
 # 统计时过滤掉的系统的应用（不计入使用时长）
 FILTER_APPS = {
@@ -669,13 +689,24 @@ def _format_stats(app_seconds: dict[str, float], date: str = "", conn: sqlite3.C
 
 
 # ── 状态栏 App ────────────────────────────────────────────────────────────────
-ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png")
+# 图标优先在 .app/Contents/Resources/ 下找，找不到再退化到当前目录（源码运行）
+def _find_icon():
+    candidates = [
+        os.path.join(APP_ROOT, "Contents", "Resources", "icon.png"),
+        os.path.join(APP_ROOT, "icon.png"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
+ICON_PATH = _find_icon()
 
 class TrackerStatusBarApp(rumps.App):
     def __init__(self):
         super().__init__(name="XiaoDan", title="启动中…", quit_button="退出小蛋")
         # 加载自定义图标（彩色模式，亮色蛋形）
-        if os.path.exists(ICON_PATH):
+        if ICON_PATH and os.path.exists(ICON_PATH):
             self.icon = ICON_PATH
         self.top1_item = rumps.MenuItem("…")
         self.top2_item = rumps.MenuItem("…")
@@ -687,10 +718,37 @@ class TrackerStatusBarApp(rumps.App):
             None,
             rumps.MenuItem("今日统计（完整）", callback=self.show_today_stats),
             rumps.MenuItem("本周统计", callback=self.show_week_stats),
+            None,
+            rumps.MenuItem("安装辅助功能权限…", callback=self.open_accessibility_settings),
         ]
         self._refresh_title(None)
         self.timer = rumps.Timer(self._refresh_title, POLL_INTERVAL)
         self.timer.start()
+        # 启动 2 秒后检查辅助功能权限，未授权则弹引导
+        rumps.Timer(self._check_accessibility, 2).start()
+
+    def _check_accessibility(self, _sender):
+        """检测辅助功能权限，未授权时弹窗引导用户去系统设置。"""
+        try:
+            from ApplicationServices import AXIsProcessTrusted
+            trusted = AXIsProcessTrusted()
+        except Exception:
+            return
+        if not trusted:
+            rumps.notification(
+                title="小蛋需要辅助功能权限",
+                subtitle="",
+                message=(
+                    "请打开「系统设置 → 隐私与安全性 → 辅助功能」，\n"
+                    "勾选「小蛋」后重新启动。"
+                ),
+            )
+
+    def open_accessibility_settings(self, _sender):
+        """打开系统设置的辅助功能面板。"""
+        subprocess.run([
+            "open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        ], check=False)
 
     def _refresh_title(self, _sender):
         today = datetime.now().strftime("%Y-%m-%d")
