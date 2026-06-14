@@ -1,3 +1,4 @@
 #!/bin/bash
-cd "/Users/fercopsun/Documents/code1/桌面监控程序"
-exec /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -u tracker.py
+# 开发者本地启动小蛋（源码模式）
+cd "$(dirname "$0")"
+exec ./venv/bin/python3 -u tracker.py
