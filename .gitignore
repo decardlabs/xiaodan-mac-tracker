@@ -8,3 +8,6 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+
+# WorkBuddy 工作数据
+.workbuddy/
