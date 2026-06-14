@@ -16,7 +16,7 @@
 
 ## 🍳 安装（普通用户，推荐）
 
-1. 从 [Releases](https://github.com/decardlabs/xiaodan-mac-tracker/releases) 下载 `XiaoDan-v0.3.0.dmg`
+1. 从 [Releases](https://github.com/decardlabs/xiaodan-mac-tracker/releases) 下载 `XiaoDan-v0.4.0.dmg`
 2. 双击挂载，把 **小蛋** 拖入 **Applications** 文件夹
 3. 在 Applications 中找到「小蛋」→ **右键 → 打开**（首次需绕过 Gatekeeper）
 4. 启动后，菜单栏出现 🥚 图标，点击 → 「安装辅助功能权限」→ 在系统设置中勾选「小蛋」
@@ -32,21 +32,22 @@ git clone https://github.com/decardlabs/xiaodan-mac-tracker.git
 cd xiaodan-mac-tracker
 python3 -m venv venv
 venv/bin/pip install pyobjc-framework-Cocoa pyobjc-framework-ApplicationServices \
-    pyobjc-framework-Quartz rumps Pillow
+    pyobjc-framework-Quartz Pillow
 venv/bin/python3 tracker.py
 ```
 
 ## 📦 打包
 
 ```bash
-./build.sh              # 生成 dist/XiaoDan.app + dist/XiaoDan-v0.3.0.dmg
+./build.sh              # py2app 打包：生成 dist/XiaoDan.app + dist/XiaoDan-v0.4.0.dmg
 ./build.sh --no-dmg     # 只生成 .app
+./build.sh --legacy     # 回退到手搓 .app 模式（不推荐，仅做兼容）
 ```
 
 打包脚本会自动：
-- 复制 venv（用符号链接节省体积）
-- 生成 `Info.plist`（菜单栏 app，不出现在 Dock）
-- ad-hoc 签名（避免 Gatekeeper 警告）
+- 调用 `py2app` 生成原生 Mach-O arm64 bundle（内嵌 Python.framework）
+- 设置 `LSUIElement=true`，菜单栏 app，不出现在 Dock
+- 排除不需要的大包（tkinter/matplotlib/numpy 等）
 - 用 `hdiutil` 创建 `.dmg`，附带 `/Applications` 快捷方式
 
 ## 🔓 权限配置
@@ -112,21 +113,23 @@ ORDER BY minutes DESC;
 
 ```
 xiaodan-mac-tracker/
-├── tracker.py                    # 主程序
+├── tracker.py                    # 主程序（纯 PyObjC，无 rumps）
+├── setup.py                      # py2app 配置
 ├── install_launchagent.py        # LaunchAgent 安装/卸载脚本
-├── build.sh                      # 打包脚本（生成 .app + .dmg）
-├── icon.png / icon@2x.png        # 状态栏图标（1x/2x）
+├── build.sh                      # 打包脚本（默认 py2app，支持 --legacy 回退）
+├── icon.png / icon@2x.png        # 状态栏模板图标（1x/2x）
 ├── build_assets/
 │   ├── source_icon_1024.png      # 1024px 高清图标源
 │   ├── icon.iconset/             # 多尺寸 PNG 集合
 │   └── icon.icns                 # macOS 应用的 .icns 图标
 └── dist/                         # 打包产物（不上传）
     ├── XiaoDan.app               # 可分发的 .app
-    └── XiaoDan-v0.3.0.dmg        # 可分发的 .dmg
+    └── XiaoDan-v0.4.0.dmg        # 可分发的 .dmg
 ```
 
 ## 📜 版本
 
+- **v0.4.0** — 重写为纯 PyObjC（移除 rumps，修复 macOS 26 状态栏图标不显示）；改用 `py2app` 原生打包（自包含 Python.framework）；状态栏图标改用模板模式（自适应明暗主题）
 - **v0.3.0** — 可分发 `.app` + `.dmg`、LaunchAgent 自启、辅助功能权限引导、新版图标、数据库迁移到 `~/Library/Application Support/`
 - **v0.2.0** — 新增状态栏 + 自定义小蛋图标 + 30秒刷新；新增 Top 3 菜单 + 今日/本周统计弹窗
 

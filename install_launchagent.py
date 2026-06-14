@@ -18,13 +18,13 @@ PLIST_PATH = os.path.expanduser(f"~/Library/LaunchAgents/{LAUNCH_AGENT_LABEL}.pl
 
 def _resolve_executable():
     """决定 LaunchAgent 实际执行的命令。
-    - 如果是从 .app 启动的：执行 /Applications/XiaoDan.app/Contents/MacOS/launcher.sh
-    - 否则：执行当前 venv 下的 python + tracker.py
+    - 优先：直接启动 /Applications/XiaoDan.app（py2app 原生 bundle，由 macOS 自己拉起）
+    - 回退：源码运行（venv python + tracker.py）
     """
-    # 优先 .app 路径
-    app_launcher = "/Applications/XiaoDan.app/Contents/MacOS/launcher.sh"
-    if os.path.exists(app_launcher):
-        return [app_launcher]
+    # 优先 .app 路径（py2app 打包后是 .app bundle，没有 launcher.sh）
+    app_path = "/Applications/XiaoDan.app"
+    if os.path.exists(app_path):
+        return ["/usr/bin/open", "-a", app_path]
 
     # 回退到源码运行
     project_root = os.path.dirname(os.path.abspath(__file__))
@@ -52,7 +52,7 @@ def install():
         "ProcessType": "Interactive",
         "StandardOutPath": os.path.expanduser("~/Library/Logs/XiaoDan/stdout.log"),
         "StandardErrorPath": os.path.expanduser("~/Library/Logs/XiaoDan/stderr.log"),
-        "WorkingDirectory": os.path.dirname(program_args[0]) if program_args[0].endswith(".sh") else os.path.dirname(os.path.abspath(__file__)),
+        "WorkingDirectory": "/",
     }
     with open(PLIST_PATH, "wb") as f:
         plistlib.dump(plist, f)

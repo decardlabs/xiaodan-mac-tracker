@@ -14,6 +14,7 @@ __pycache__/
 
 # 打包产物（由 build.sh 生成，不要上传）
 dist/
+build/
 build_assets/source_icon_1024.png
 build_assets/icon.iconset/
 build_assets/icon_candidates/
