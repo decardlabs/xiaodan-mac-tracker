@@ -1,7 +1,18 @@
+# 密钥
+.env
+.env.save
+
 # 数据库和日志（本地运行数据，不上传）
 activity.db
 tracker.log
 tracker_error.log
+classifier_error.log
+
+# 生成的报告
+reports/*.html
+
+# IDE
+.vscode/
 
 # Python
 __pycache__/

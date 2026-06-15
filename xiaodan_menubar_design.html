@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小蛋菜单栏 UI 设计稿</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #e0e0e0; display: flex; justify-content: center; align-items: flex-start; padding: 40px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; gap: 32px; }
+
+  /* ── 颜色规范注释 ── */
+  /*
+    学校学习  #5B8DEF  蓝
+    自主学习  #9B72CF  紫
+    娱乐      #4ECDC4  青绿
+    其他      #B8BCC8  灰
+  */
+
+  .popup {
+    width: 260px;
+    background: rgba(246,246,246,0.98);
+    border: 0.5px solid rgba(0,0,0,0.14);
+    border-radius: 12px;
+    overflow: hidden;
+    font-size: 13px;
+    color: #1c1c1e;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.14);
+  }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* Header */
+  .header { padding: 14px 14px 12px; border-bottom: 0.5px solid rgba(0,0,0,0.08); }
+  .header-date { font-size: 11px; color: #8e8e93; margin-bottom: 3px; }
+  .header-row { display: flex; align-items: baseline; gap: 6px; }
+  .header-total { font-size: 24px; font-weight: 600; letter-spacing: -0.5px; color: #1c1c1e; }
+  .header-unit { font-size: 12px; color: #8e8e93; }
+
+  /* Chart */
+  .chart-wrap { padding: 12px 14px 4px; }
+  .toggle-row { display: flex; justify-content: center; padding: 6px 0 10px; }
+  .tog-btn {
+    display: flex; align-items: center; gap: 5px;
+    background: rgba(0,0,0,0.06); border: none; border-radius: 7px;
+    padding: 5px 11px; font-size: 11px; color: #3c3c43;
+    cursor: pointer; font-family: -apple-system, sans-serif;
+  }
+  .tog-btn:hover { background: rgba(0,0,0,0.1); }
+
+  /* Divider */
+  .divider { height: 0.5px; background: rgba(0,0,0,0.08); }
+
+  /* Action rows */
+  .action-group { padding: 4px 6px; }
+  .action-btn {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 8px; border-radius: 6px; cursor: pointer;
+  }
+  .action-btn:hover { background: rgba(0,0,0,0.05); }
+  .action-label { font-size: 13px; color: #1c1c1e; }
+  .action-hint { font-size: 13px; color: #c7c7cc; }
+
+  /* Quit */
+  .quit-group { padding: 4px 6px 8px; }
+  .quit-btn {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 8px; border-radius: 6px; cursor: pointer;
+  }
+  .quit-btn:hover { background: rgba(0,0,0,0.05); }
+  .quit-label { font-size: 13px; color: #8e8e93; }
+  .quit-key { font-size: 11px; color: #c7c7cc; }
+
+  /* Subpage nav */
+  .back-btn {
+    display: flex; align-items: center; gap: 3px;
+    padding: 11px 14px 10px; font-size: 13px; color: #007aff;
+    cursor: pointer; border-bottom: 0.5px solid rgba(0,0,0,0.08);
+  }
+  .back-btn:hover { opacity: 0.7; }
+  .sub-title {
+    padding: 10px 14px 6px; font-size: 11px; font-weight: 600;
+    color: #8e8e93; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+
+  /* Brief */
+  .brief-row { display: flex; align-items: flex-start; gap: 9px; padding: 7px 14px; }
+  .brief-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; }
+  .brief-cat { font-size: 13px; color: #1c1c1e; display: flex; justify-content: space-between; margin-bottom: 2px; }
+  .brief-time { font-size: 13px; color: #8e8e93; font-variant-numeric: tabular-nums; }
+  .brief-sub { font-size: 11px; color: #8e8e93; line-height: 1.5; }
+
+  /* Goals */
+  .goal-row { padding: 8px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 0.5px solid rgba(0,0,0,0.05); }
+  .goal-row:last-of-type { border-bottom: none; }
+  .goal-info { flex: 1; }
+  .goal-name { font-size: 13px; color: #1c1c1e; }
+  .goal-progress { font-size: 11px; color: #8e8e93; margin-top: 1px; }
+  .goal-bar-bg { height: 3px; background: rgba(0,0,0,0.08); border-radius: 2px; margin-top: 5px; }
+  .goal-bar-fill { height: 3px; border-radius: 2px; }
+  .goal-pct { font-size: 11px; font-variant-numeric: tabular-nums; font-weight: 500; }
+  .add-goal {
+    display: flex; align-items: center; gap: 6px;
+    padding: 9px 14px; color: #007aff; font-size: 13px;
+    cursor: pointer; border-top: 0.5px solid rgba(0,0,0,0.08);
+  }
+</style>
+</head>
+<body>
+
+<div class="popup">
+
+  <!-- ══ 首页 ══ -->
+  <div class="page active" id="p-home">
+    <div class="header">
+      <div class="header-date">今天 · 2026年6月14日</div>
+      <div class="header-row">
+        <span class="header-total">6h 23m</span>
+        <span class="header-unit">活跃</span>
+      </div>
+    </div>
+
+    <div class="chart-wrap">
+
+      <!-- 环形图 -->
+      <div id="view-donut" style="display:flex;justify-content:center;">
+        <svg width="200" height="118" viewBox="0 0 200 118">
+          <circle cx="62" cy="58" r="36" fill="none" stroke="#ebebeb" stroke-width="17"/>
+          <!-- 学校学习 #5B8DEF -->
+          <circle cx="62" cy="58" r="36" fill="none" stroke="#5B8DEF" stroke-width="17" stroke-dasharray="43 226" stroke-dashoffset="0"/>
+          <!-- 自主学习 #9B72CF -->
+          <circle cx="62" cy="58" r="36" fill="none" stroke="#9B72CF" stroke-width="17" stroke-dasharray="75 226" stroke-dashoffset="-43"/>
+          <!-- 娱乐 #4ECDC4 -->
+          <circle cx="62" cy="58" r="36" fill="none" stroke="#4ECDC4" stroke-width="17" stroke-dasharray="61 226" stroke-dashoffset="-118"/>
+          <!-- 其他 #B8BCC8 -->
+          <circle cx="62" cy="58" r="36" fill="none" stroke="#B8BCC8" stroke-width="17" stroke-dasharray="47 226" stroke-dashoffset="-179"/>
+          <text x="62" y="53" text-anchor="middle" font-size="9" fill="#8e8e93" font-family="-apple-system,sans-serif">学习</text>
+          <text x="62" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#1c1c1e" font-family="-apple-system,sans-serif">52%</text>
+          <!-- 图例 -->
+          <rect x="114" y="16" width="7" height="7" rx="2" fill="#5B8DEF"/>
+          <text x="125" y="23" font-size="10" fill="#8e8e93" font-family="-apple-system,sans-serif">学校  1h 12m</text>
+          <rect x="114" y="32" width="7" height="7" rx="2" fill="#9B72CF"/>
+          <text x="125" y="39" font-size="10" fill="#8e8e93" font-family="-apple-system,sans-serif">自主  2h 05m</text>
+          <rect x="114" y="48" width="7" height="7" rx="2" fill="#4ECDC4"/>
+          <text x="125" y="55" font-size="10" fill="#8e8e93" font-family="-apple-system,sans-serif">娱乐  1h 44m</text>
+          <rect x="114" y="64" width="7" height="7" rx="2" fill="#B8BCC8"/>
+          <text x="125" y="71" font-size="10" fill="#8e8e93" font-family="-apple-system,sans-serif">其他  1h 22m</text>
+        </svg>
+      </div>
+
+      <!-- 横向条形图（切换后显示） -->
+      <div id="view-bar" style="display:none;padding:4px 0 6px;">
+        <div style="display:flex;flex-direction:column;gap:9px;">
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:#8e8e93;margin-bottom:3px;"><span>自主学习</span><span>2h 05m</span></div>
+            <div style="height:6px;background:#ebebeb;border-radius:3px;"><div style="height:6px;width:85%;background:#9B72CF;border-radius:3px;"></div></div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:#8e8e93;margin-bottom:3px;"><span>娱乐</span><span>1h 44m</span></div>
+            <div style="height:6px;background:#ebebeb;border-radius:3px;"><div style="height:6px;width:71%;background:#4ECDC4;border-radius:3px;"></div></div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:#8e8e93;margin-bottom:3px;"><span>学校学习</span><span>1h 12m</span></div>
+            <div style="height:6px;background:#ebebeb;border-radius:3px;"><div style="height:6px;width:49%;background:#5B8DEF;border-radius:3px;"></div></div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:#8e8e93;margin-bottom:3px;"><span>其他</span><span>1h 22m</span></div>
+            <div style="height:6px;background:#ebebeb;border-radius:3px;"><div style="height:6px;width:56%;background:#B8BCC8;border-radius:3px;"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 切换按钮（图表正下方） -->
+      <div class="toggle-row">
+        <button class="tog-btn" onclick="toggleChart()">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 8h10M10 5l3 3-3 3"/><path d="M13 8H3M6 11L3 8l3-3"/>
+          </svg>
+          切换图表
+        </button>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <div class="action-group">
+      <div class="action-btn" onclick="go('p-brief')">
+        <span class="action-label">今日简报</span>
+        <span class="action-hint">›</span>
+      </div>
+      <div class="action-btn" onclick="go('p-goals')">
+        <span class="action-label">目标设定</span>
+        <span class="action-hint">›</span>
+      </div>
+      <div class="action-btn">
+        <span class="action-label">查看周报</span>
+        <span class="action-hint">›</span>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="quit-group">
+      <div class="quit-btn">
+        <span class="quit-label">退出小蛋</span>
+        <span class="quit-key">⌘Q</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 今日简报子页面 ══ -->
+  <div class="page" id="p-brief">
+    <div class="back-btn" onclick="go('p-home')">‹ 返回</div>
+    <div class="sub-title">今日简报</div>
+    <div class="brief-row">
+      <span class="brief-dot" style="background:#5B8DEF;"></span>
+      <div style="flex:1;">
+        <div class="brief-cat"><span>学校学习</span><span class="brief-time">1h 12m</span></div>
+        <div class="brief-sub">文献管理 48m · 课程/作业 24m</div>
+      </div>
+    </div>
+    <div class="brief-row">
+      <span class="brief-dot" style="background:#9B72CF;"></span>
+      <div style="flex:1;">
+        <div class="brief-cat"><span>自主学习</span><span class="brief-time">2h 05m</span></div>
+        <div class="brief-sub">编程学习 1h 20m · AI工具 45m</div>
+      </div>
+    </div>
+    <div class="brief-row">
+      <span class="brief-dot" style="background:#4ECDC4;"></span>
+      <div style="flex:1;">
+        <div class="brief-cat"><span>娱乐</span><span class="brief-time">1h 44m</span></div>
+        <div class="brief-sub">视频 52m · 社交/闲逛 52m</div>
+      </div>
+    </div>
+    <div class="brief-row" style="margin-bottom:6px;">
+      <span class="brief-dot" style="background:#B8BCC8;"></span>
+      <div style="flex:1;">
+        <div class="brief-cat"><span style="color:#8e8e93;">其他</span><span class="brief-time">1h 22m</span></div>
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="action-group" style="padding-bottom:6px;">
+      <div class="action-btn">
+        <span class="action-label">查看完整日报</span>
+        <span class="action-hint">›</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 目标设定子页面 ══ -->
+  <div class="page" id="p-goals">
+    <div class="back-btn" onclick="go('p-home')">‹ 返回</div>
+    <div class="sub-title">目标设定</div>
+    <div class="goal-row">
+      <div class="goal-info">
+        <div class="goal-name">自主学习</div>
+        <div class="goal-progress">今日 2h 05m / 目标 3h</div>
+        <div class="goal-bar-bg"><div class="goal-bar-fill" style="width:69%;background:#9B72CF;"></div></div>
+      </div>
+      <div class="goal-pct" style="color:#9B72CF;">69%</div>
+    </div>
+    <div class="goal-row">
+      <div class="goal-info">
+        <div class="goal-name">学校学习</div>
+        <div class="goal-progress">今日 1h 12m / 目标 2h</div>
+        <div class="goal-bar-bg"><div class="goal-bar-fill" style="width:60%;background:#5B8DEF;"></div></div>
+      </div>
+      <div class="goal-pct" style="color:#5B8DEF;">60%</div>
+    </div>
+    <div class="goal-row">
+      <div class="goal-info">
+        <div class="goal-name">娱乐上限</div>
+        <div class="goal-progress">今日 1h 44m / 上限 2h</div>
+        <div class="goal-bar-bg"><div class="goal-bar-fill" style="width:87%;background:#4ECDC4;"></div></div>
+      </div>
+      <div class="goal-pct" style="color:#4ECDC4;">87%</div>
+    </div>
+    <div class="add-goal">
+      <span style="font-size:15px;line-height:1;">+</span>
+      <span>添加目标</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function go(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+function toggleChart() {
+  var d = document.getElementById('view-donut');
+  var b = document.getElementById('view-bar');
+  if (d.style.display === 'none') { d.style.display = 'flex'; b.style.display = 'none'; }
+  else { d.style.display = 'none'; b.style.display = 'block'; }
+}
+</script>
+
+</body>
+</html>
