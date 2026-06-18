@@ -261,6 +261,14 @@ input[type=text]:focus{{border-color:#9B72CF;}}
 .new-note-btn{{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:9px;border:.5px dashed #D0D0D0;border-radius:8px;background:none;font-size:13px;color:#8E8E93;cursor:pointer;margin-bottom:14px;}}
 .new-note-btn:hover{{border-color:#9B72CF;color:#9B72CF;}}
 .toast{{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(28,28,30,.9);color:#FFF;padding:8px 18px;border-radius:20px;font-size:13px;z-index:9999;opacity:0;transition:opacity .25s;pointer-events:none;}}
+.xd-confirm-overlay{{position:fixed;inset:0;background:rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;z-index:9999;}}
+.xd-confirm-box{{background:#fff;border-radius:12px;padding:20px 24px;width:260px;box-shadow:0 4px 20px rgba(0,0,0,0.15);font-family:-apple-system,sans-serif;}}
+.xd-confirm-box p{{font-size:14px;color:#1c1c1e;margin:0 0 16px;line-height:1.5;}}
+.xd-confirm-btns{{display:flex;gap:8px;justify-content:flex-end;}}
+.xd-confirm-btns button{{padding:6px 14px;border-radius:7px;border:none;font-size:13px;cursor:pointer;}}
+.xd-btn-cancel{{background:#f2f2f7;color:#1c1c1e;}}
+.xd-btn-confirm{{background:#ff3b30;color:#fff;}}
+.xd-btn-confirm-gray{{background:#8e8e93;color:#fff;}}
 </style>
 <script>
 function xdNav(p){{window.location.href=p;}}
@@ -270,6 +278,17 @@ function showToast(msg){{
   document.body.appendChild(t);
   setTimeout(function(){{t.style.opacity='1';}},20);
   setTimeout(function(){{t.style.opacity='0';setTimeout(function(){{t.remove();}},260);}},2000);
+}}
+function xdConfirm(msg,onConfirm,cancelLabel,okLabel,okClass){{
+  var cl=cancelLabel||'取消';
+  var ol=okLabel||'删除';
+  var oc=okClass||'xd-btn-confirm';
+  var overlay=document.createElement('div');
+  overlay.className='xd-confirm-overlay';
+  overlay.innerHTML='<div class="xd-confirm-box"><p>'+msg+'</p><div class="xd-confirm-btns"><button class="xd-btn-cancel" id="xd-cancel">'+cl+'</button><button class="'+oc+'" id="xd-ok">'+ol+'</button></div></div>';
+  document.body.appendChild(overlay);
+  overlay.querySelector('#xd-cancel').onclick=function(){{overlay.remove();}};
+  overlay.querySelector('#xd-ok').onclick=function(){{overlay.remove();onConfirm();}};
 }}
 function toggleYear(id){{
   var el=document.getElementById(id);
@@ -665,8 +684,7 @@ function saveMonthlyReflection(year,month,content){{
                              f'{date_read}</span>') if date_read else ""
                 # Title safe for use inside single-quoted JS string
                 title_js  = title_raw.replace("\\", "\\\\").replace("'", "\\'").replace('"', "&quot;").replace("&", "&amp;")
-                del_onclick = (f"if(confirm('确定要删除《{title_js}》这条笔记吗？'))"
-                               f"{{deleteBookNote({nid})}}")
+                del_onclick = f"xdConfirm('确定要删除《{title_js}》这条笔记吗？',function(){{deleteBookNote({nid})}})"
 
                 html += f"""<div class="note-card">
 <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
@@ -725,8 +743,8 @@ function checkUnsaved(){{
                 _fieldVal('inp-author')  !== _original.author  ||
                 _fieldVal('inp-tags')    !== _original.tags    ||
                 _fieldVal('inp-content') !== _original.content;
-  if(changed && !confirm('{confirm_msg}'))return;
-  xdNav('xd://navigate_booknotes_history');
+  if(!changed){{xdNav('xd://navigate_booknotes_history');return;}}
+  xdConfirm('{confirm_msg}',function(){{xdNav('xd://navigate_booknotes_history');}},'继续编辑','不保存，离开','xd-btn-confirm-gray');
 }}
 function doSave(){{
   var t=_fieldVal('inp-title');
@@ -758,8 +776,7 @@ function doSave(){{
 """
         if editing:
             html += (f'  <button class="btn btn-danger" '
-                     f'onclick="if(confirm(\'确定要删除这条笔记吗？\'))'
-                     f'xdNav(\'xd://delete_book_note?id={nid}\')">删除记录</button>\n'
+                     f'onclick="xdConfirm(\'确定要删除这条笔记吗？\',function(){{xdNav(\'xd://delete_book_note?id={nid}\')}})">删除记录</button>\n'
                      f'  <button class="btn btn-primary" onclick="doSave()">保存更新</button>\n')
         else:
             html += '  <button class="btn btn-primary" onclick="doSave()">保存</button>\n'
