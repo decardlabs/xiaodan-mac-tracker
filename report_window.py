@@ -131,6 +131,7 @@ class ReportWindow(NSObject):
         )
         wv.setAutoresizingMask_(18)
         wv.setNavigationDelegate_(self)
+        wv.setUIDelegate_(self)
         win.contentView().addSubview_(wv)
         self._webview = wv
 
@@ -934,6 +935,18 @@ function doSave(){{
                 f'</div>'
             )
         return html + '</div>'
+
+    # ── WKUIDelegate ─────────────────────────────────────────────────────────
+
+    def webView_runJavaScriptConfirmPanelWithMessage_initiatedByFrame_completionHandler_(
+            self, webview, message, frame, handler):
+        from AppKit import NSAlert
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(message)
+        alert.addButtonWithTitle_("确定")
+        alert.addButtonWithTitle_("取消")
+        result = alert.runModal()
+        handler(result == 1000)
 
     # ── WKNavigationDelegate ─────────────────────────────────────────────────
 
