@@ -1,0 +1,1071 @@
+"""
+小蛋报告窗口 — 基于 WKWebView 的周报/月报/书单界面
+"""
+
+import json
+import objc
+import urllib.parse
+from datetime import date as _date, timedelta as _timedelta
+
+from Foundation import NSObject, NSURL
+from AppKit import (
+    NSWindow, NSColor, NSApplication,
+    NSTitledWindowMask, NSClosableWindowMask,
+    NSMiniaturizableWindowMask, NSResizableWindowMask,
+    NSBackingStoreBuffered,
+)
+
+try:
+    from WebKit import WKWebView, WKWebViewConfiguration
+except ImportError:
+    raise SystemExit("缺少依赖，请运行：pip install pyobjc-framework-WebKit")
+
+from analyzer import (
+    get_all_weeks, get_all_months,
+    get_week_stats, get_month_stats,
+    get_reflection, save_reflection,
+    get_book_notes, save_book_note,
+    update_book_note, delete_book_note,
+    get_monthly_reflection, save_monthly_reflection,
+)
+
+
+# ── 颜色 & 分类常量 ──────────────────────────────────────────────────────────
+
+COLORS = {
+    "自主学习":       "#9B72CF",
+    "学校学习":       "#5B8DEF",
+    "娱乐":          "#4ECDC4",
+    "其他":          "#B8BCC8",
+}
+
+CATEGORIES = ["自主学习", "学校学习", "娱乐", "其他"]
+
+
+# ── 辅助函数 ──────────────────────────────────────────────────────────────────
+
+def fmt_duration(seconds: int | float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return "不足1分钟"
+    total_m = seconds // 60
+    h, m = divmod(total_m, 60)
+    if h > 0:
+        return f"{h}h {m:02d}m"
+    return f"{m}m"
+
+
+def fmt_change(current: int | float, prev) -> tuple[str, str]:
+    if prev is None:
+        return ("", "flat")
+    diff = int(current) - int(prev)
+    if diff == 0:
+        return ("持平", "flat")
+    abs_m = abs(diff) // 60
+    h, m = divmod(abs_m, 60)
+    dur = f"{h}h {m:02d}m" if h > 0 else f"{m}m"
+    return (f"+{dur}", "up") if diff > 0 else (f"-{dur}", "down")
+
+
+def _fmt_week_range(year: int, week: int) -> str:
+    """同月→「6月15日-21日」，跨月→「5月26日-6月1日」。"""
+    ds = _date.fromisocalendar(year, week, 1)
+    de = _date.fromisocalendar(year, week, 7)
+    if ds.month == de.month:
+        return f"{ds.month}月{ds.day}日-{de.day}日"
+    return f"{ds.month}月{ds.day}日-{de.month}月{de.day}日"
+
+
+def _week_prev(year: int, week: int) -> tuple[int, int]:
+    d = _date.fromisocalendar(year, week, 1) - _timedelta(weeks=1)
+    y, w, _ = d.isocalendar()
+    return y, w
+
+
+def _week_next(year: int, week: int) -> tuple[int, int]:
+    d = _date.fromisocalendar(year, week, 1) + _timedelta(weeks=1)
+    y, w, _ = d.isocalendar()
+    return y, w
+
+
+# ── ReportWindow ─────────────────────────────────────────────────────────────
+
+class ReportWindow(NSObject):
+
+    def init(self):
+        self = objc.super(ReportWindow, self).init()
+        if self is not None:
+            self._window        = None
+            self._webview       = None
+            self._current_type  = None
+            self._current_key   = None
+            self._current_sub   = None
+            self._editing_note  = None  # prefill dict for booknotes_edit sub
+        return self
+
+    @objc.python_method
+    def show(self):
+        if self._window is None:
+            self._build_window()
+        self._window.makeKeyAndOrderFront_(None)
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        self._navigate_default()
+
+    @objc.python_method
+    def _build_window(self):
+        mask = (NSTitledWindowMask | NSClosableWindowMask
+                | NSMiniaturizableWindowMask | NSResizableWindowMask)
+        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (780, 560)), mask, NSBackingStoreBuffered, False
+        )
+        win.setTitle_("小蛋报告")
+        win.setMinSize_((780, 560))
+        win.setBackgroundColor_(NSColor.whiteColor())
+        win.setReleasedWhenClosed_(False)
+        win.center()
+        self._window = win
+
+        config = WKWebViewConfiguration.alloc().init()
+        wv = WKWebView.alloc().initWithFrame_configuration_(
+            win.contentView().bounds(), config
+        )
+        wv.setAutoresizingMask_(18)
+        wv.setNavigationDelegate_(self)
+        win.contentView().addSubview_(wv)
+        self._webview = wv
+
+    @objc.python_method
+    def _navigate_default(self):
+        today = _date.today()
+        year, week, _ = today.isocalendar()
+        self._render_week(year, week)
+
+    @objc.python_method
+    def _load_html(self, html_str: str):
+        self._webview.loadHTMLString_baseURL_(html_str, None)
+
+    # ── 渲染方法 ──────────────────────────────────────────────────────────────
+
+    @objc.python_method
+    def _render_week(self, year: int, week: int, sub=None, toast=None):
+        self._current_type = "week"
+        self._current_key  = (year, week)
+        self._current_sub  = sub
+        d_monday     = _date.fromisocalendar(year, week, 1)
+        active_year  = d_monday.year
+        active_month = d_monday.month
+        sidebar = self._build_sidebar("week", active_year, active_month)
+        if sub == "detail":
+            content = self._build_detail_content(year, week)
+        elif sub == "booknotes":
+            content = self._build_booknotes_content(year, week, toast=toast)
+        elif sub == "booknotes_new":
+            content = self._build_booknotes_new_content(year, week, prefill=None)
+        elif sub == "booknotes_edit":
+            content = self._build_booknotes_new_content(year, week, prefill=self._editing_note)
+        else:
+            content = self._build_week_content(year, week)
+        self._load_html(self._build_page(sidebar, content))
+
+    @objc.python_method
+    def _render_month(self, year: int, month: int, sub=None):
+        self._current_type = "month"
+        self._current_key  = (year, month)
+        self._current_sub  = sub
+        sidebar = self._build_sidebar("month", year, month)
+        if sub == "pages":
+            content = self._build_top_pages_content(year, month)
+        elif sub == "ranking":
+            content = self._build_ranking_content(year, month)
+        else:
+            content = self._build_month_content(year, month)
+        self._load_html(self._build_page(sidebar, content))
+
+    @objc.python_method
+    def _render_booknotes_history(self, toast=None):
+        if self._current_type == "week" and self._current_key:
+            y, w = self._current_key
+        else:
+            today = _date.today()
+            y, w, _ = today.isocalendar()
+        self._render_week(y, w, sub="booknotes", toast=toast)
+
+    # ── HTML 骨架 ─────────────────────────────────────────────────────────────
+
+    @objc.python_method
+    def _build_page(self, sidebar_html: str, content_html: str) -> str:
+        return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:#1C1C1E;display:flex;height:100vh;overflow:hidden;}}
+#sidebar{{width:160px;flex-shrink:0;background:#F7F7F7;border-right:.5px solid #E0E0E0;height:100vh;overflow-y:auto;padding:12px 0;}}
+#content{{flex:1;padding:20px;overflow-y:auto;height:100vh;}}
+::-webkit-scrollbar{{width:4px;}}
+::-webkit-scrollbar-thumb{{background:#D0D0D0;border-radius:2px;}}
+.sec-title{{font-size:10px;color:#8E8E93;padding:8px 12px 4px;letter-spacing:.5px;text-transform:uppercase;}}
+.year-header{{display:flex;align-items:center;gap:5px;padding:5px 12px;cursor:pointer;font-size:12px;color:#8E8E93;user-select:none;}}
+.year-header:hover{{color:#1C1C1E;}}
+.chevron{{font-size:8px;width:10px;text-align:center;flex-shrink:0;}}
+.nav-month{{display:block;padding:5px 12px 5px 24px;font-size:13px;color:#8E8E93;cursor:pointer;text-decoration:none;border-right:2px solid transparent;}}
+.nav-month:hover{{color:#1C1C1E;}}
+.nav-month.active{{color:#1C1C1E;background:#FFF;border-right-color:#1C1C1E;font-weight:500;}}
+hr.divider{{border:none;border-top:.5px solid #E0E0E0;margin:8px 0;}}
+.week-nav{{display:flex;align-items:center;justify-content:center;gap:14px;padding-bottom:12px;}}
+.nav-arrow{{background:none;border:none;cursor:pointer;font-size:20px;color:#1C1C1E;padding:0 6px;line-height:1;border-radius:4px;}}
+.nav-arrow:hover:not(:disabled){{background:#F0F0F0;}}
+.nav-arrow:disabled{{color:#D0D0D0;cursor:default;}}
+.nav-date{{font-size:14px;font-weight:500;min-width:140px;text-align:center;}}
+.week-tabs{{display:flex;border-bottom:.5px solid #E0E0E0;margin-bottom:16px;}}
+.tab{{padding:9px 16px;font-size:13px;color:#8E8E93;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;}}
+.tab:hover{{color:#1C1C1E;}}
+.tab.active{{color:#1C1C1E;border-bottom-color:#1C1C1E;}}
+.total-row{{font-size:20px;font-weight:500;margin:12px 0 4px;}}
+.card-grid{{display:flex;gap:8px;margin:14px 0;}}
+.card{{flex:1;background:#F5F5F5;border-radius:8px;padding:10px 12px;}}
+.card-label{{font-size:11px;color:#8E8E93;display:flex;align-items:center;gap:5px;}}
+.dot{{width:7px;height:7px;border-radius:2px;flex-shrink:0;}}
+.card-value{{font-size:18px;font-weight:500;margin-top:4px;}}
+.card-change{{font-size:11px;margin-top:2px;}}
+.up{{color:#1D9E75;}}.down{{color:#D85A30;}}.flat{{color:#8E8E93;}}
+hr.sec-div{{border:none;border-top:.5px solid #E0E0E0;margin:16px 0;}}
+.page-title{{font-size:18px;font-weight:500;margin-bottom:10px;}}
+.chart-wrap{{margin:14px 0;}}
+textarea{{width:100%;border:.5px solid #E0E0E0;border-radius:6px;padding:8px;font-size:13px;font-family:inherit;resize:vertical;outline:none;color:#1C1C1E;}}
+textarea:focus{{border-color:#9B72CF;}}
+.btn{{padding:5px 14px;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit;}}
+.btn-primary{{background:#1C1C1E;color:#FFF;}}
+.btn-secondary{{background:#F0F0F0;color:#1C1C1E;}}
+.btn-danger{{background:#FFE5E5;color:#D85A30;}}
+input[type=text]{{width:100%;border:.5px solid #E0E0E0;border-radius:6px;padding:7px 10px;font-size:13px;font-family:inherit;outline:none;color:#1C1C1E;margin-bottom:8px;}}
+input[type=text]:focus{{border-color:#9B72CF;}}
+.note-card{{border:.5px solid #E0E0E0;border-radius:8px;padding:12px 14px;margin-bottom:10px;}}
+.tag-pill{{display:inline-block;background:#F0F0F0;border-radius:10px;padding:1px 7px;font-size:11px;color:#8E8E93;margin-right:4px;}}
+.pie-grid{{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px;}}
+.pie-cell{{border:.5px solid #E0E0E0;border-radius:8px;padding:12px;}}
+.pie-cell-title{{font-size:13px;font-weight:500;margin-bottom:8px;display:flex;justify-content:space-between;}}
+.sub-row{{display:flex;justify-content:space-between;font-size:12px;color:#8E8E93;margin-top:4px;}}
+.page-row{{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:.5px solid #F0F0F0;}}
+.page-idx{{font-size:14px;font-weight:500;color:#8E8E93;width:20px;flex-shrink:0;}}
+.page-info{{flex:1;min-width:0;}}
+.page-title-t{{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
+.page-url-t{{font-size:12px;color:#8E8E93;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}}
+.page-dur{{font-size:13px;font-weight:500;flex-shrink:0;}}
+.prog-bg{{height:3px;background:#F0F0F0;border-radius:2px;margin-top:4px;}}
+.prog-fill{{height:3px;border-radius:2px;}}
+.form-card{{border:.5px solid #E0E0E0;border-radius:8px;padding:16px;margin-bottom:16px;}}
+.new-note-btn{{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:9px;border:.5px dashed #D0D0D0;border-radius:8px;background:none;font-size:13px;color:#8E8E93;cursor:pointer;margin-bottom:14px;}}
+.new-note-btn:hover{{border-color:#9B72CF;color:#9B72CF;}}
+.toast{{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(28,28,30,.9);color:#FFF;padding:8px 18px;border-radius:20px;font-size:13px;z-index:9999;opacity:0;transition:opacity .25s;pointer-events:none;}}
+</style>
+<script>
+function xdNav(p){{window.location.href=p;}}
+function showToast(msg){{
+  var t=document.createElement('div');
+  t.className='toast';t.textContent=msg;
+  document.body.appendChild(t);
+  setTimeout(function(){{t.style.opacity='1';}},20);
+  setTimeout(function(){{t.style.opacity='0';setTimeout(function(){{t.remove();}},260);}},2000);
+}}
+function toggleYear(id){{
+  var el=document.getElementById(id);
+  var ch=document.getElementById('chev_'+id);
+  if(el.style.display==='none'){{el.style.display='block';ch.textContent='▼';}}
+  else{{el.style.display='none';ch.textContent='▶';}}
+}}
+function navigate(type,year,key){{
+  if(type==='week')xdNav('xd://navigate_week?year='+year+'&week='+key);
+  else if(type==='week_month')xdNav('xd://navigate_week_month?year='+year+'&month='+key);
+  else if(type==='month')xdNav('xd://navigate_month?year='+year+'&month='+key);
+  else if(type==='booknotes_new')xdNav('xd://navigate_booknotes_new');
+  else if(type==='booknotes_history')xdNav('xd://navigate_booknotes_history');
+}}
+function navWeek(year,week){{xdNav('xd://navigate_week?year='+year+'&week='+week);}}
+function navTab(sub,year,week){{
+  if(sub==='')xdNav('xd://navigate_week?year='+year+'&week='+week);
+  else xdNav('xd://navigate_week_sub?year='+year+'&week='+week+'&sub='+sub);
+}}
+function saveReflection(year,week){{
+  var t=document.getElementById('reflection').value;
+  xdNav('xd://save_reflection?year='+year+'&week='+week+'&content='+encodeURIComponent(t));
+}}
+function deleteBookNote(id){{
+  xdNav('xd://delete_book_note?id='+id);
+}}
+function toggleNote(id){{
+  var el=document.getElementById('note-content-'+id);
+  var btn=document.getElementById('note-toggle-'+id);
+  if(el.style.display==='none'){{el.style.display='block';btn.textContent='收起 ▴';}}
+  else{{el.style.display='none';btn.textContent='展开 ▾';}}
+}}
+function navigateSub(sub,year,month){{
+  xdNav('xd://navigate_month_sub?sub='+sub+'&year='+year+'&month='+month);
+}}
+function saveMonthlyReflection(year,month,content){{
+  xdNav('xd://save_monthly_reflection?year='+year+'&month='+month+'&content='+encodeURIComponent(content));
+}}
+</script>
+</head>
+<body>
+<div id="sidebar">{sidebar_html}</div>
+<div id="content">{content_html}</div>
+</body>
+</html>"""
+
+    # ── Sidebar ───────────────────────────────────────────────────────────────
+
+    @objc.python_method
+    def _build_sidebar(self, active_type: str, active_year: int, active_month: int) -> str:
+        today = _date.today()
+        cur_y = today.year
+        cur_m = today.month
+
+        # ── 周报 section: {year: set of months} ─────────────────────────────
+        week_ym: dict[int, set] = {}
+        for y, _w, ds, _de in get_all_weeks():
+            d = _date.fromisoformat(ds)
+            week_ym.setdefault(d.year, set()).add(d.month)
+        week_ym.setdefault(cur_y, set()).add(cur_m)
+
+        def _week_expanded(y: int) -> bool:
+            if active_type == "week":
+                return y == active_year
+            return y == max(week_ym.keys())
+
+        html = '<div class="sec-title">周报</div>'
+        for y in sorted(week_ym, reverse=True):
+            exp = _week_expanded(y)
+            gid = f"wy{y}"
+            html += (f'<div class="year-header" onclick="toggleYear(\'{gid}\')">'
+                     f'<span class="chevron" id="chev_{gid}">{"▼" if exp else "▶"}</span>'
+                     f'{y}年</div>'
+                     f'<div id="{gid}" style="display:{"block" if exp else "none"}">')
+            for m in sorted(week_ym[y], reverse=True):
+                is_act = active_type == "week" and y == active_year and m == active_month
+                cls = " active" if is_act else ""
+                html += (f'<a class="nav-month{cls}" '
+                         f'onclick="navigate(\'week_month\',{y},{m})">{m}月</a>')
+            html += '</div>'
+
+        html += '<hr class="divider">'
+
+        # ── 月报 section: {year: set of months} ─────────────────────────────
+        month_ym: dict[int, set] = {}
+        for y, m in get_all_months():
+            month_ym.setdefault(y, set()).add(m)
+        month_ym.setdefault(cur_y, set()).add(cur_m)
+
+        def _month_expanded(y: int) -> bool:
+            if active_type == "month":
+                return y == active_year
+            return y == max(month_ym.keys())
+
+        html += '<div class="sec-title">月报</div>'
+        for y in sorted(month_ym, reverse=True):
+            exp = _month_expanded(y)
+            gid = f"my{y}"
+            html += (f'<div class="year-header" onclick="toggleYear(\'{gid}\')">'
+                     f'<span class="chevron" id="chev_{gid}">{"▼" if exp else "▶"}</span>'
+                     f'{y}年</div>'
+                     f'<div id="{gid}" style="display:{"block" if exp else "none"}">')
+            for m in sorted(month_ym[y], reverse=True):
+                is_act = active_type == "month" and y == active_year and m == active_month
+                cls = " active" if is_act else ""
+                html += (f'<a class="nav-month{cls}" '
+                         f'onclick="navigate(\'month\',{y},{m})">{m}月</a>')
+            html += '</div>'
+
+        return html
+
+    # ── 周切换导航 + Tabs ─────────────────────────────────────────────────────
+
+    @objc.python_method
+    def _build_week_header(self, year: int, week: int, sub) -> str:
+        today = _date.today()
+        cur_y, cur_w, _ = today.isocalendar()
+        is_current = (year == cur_y and week == cur_w)
+
+        py, pw = _week_prev(year, week)
+        ny, nw = _week_next(year, week)
+
+        all_weeks = get_all_weeks()
+        if all_weeks:
+            ey, ew = all_weeks[-1][0], all_weeks[-1][1]
+            has_prev = (_date.fromisocalendar(py, pw, 1)
+                        >= _date.fromisocalendar(ey, ew, 1))
+        else:
+            has_prev = False
+
+        left  = (f'<button class="nav-arrow" onclick="navWeek({py},{pw})">‹</button>'
+                 if has_prev else '<button class="nav-arrow" disabled>‹</button>')
+        right = (f'<button class="nav-arrow" onclick="navWeek({ny},{nw})">›</button>'
+                 if not is_current else '<button class="nav-arrow" disabled>›</button>')
+
+        nav = (f'<div class="week-nav">{left}'
+               f'<span class="nav-date">{_fmt_week_range(year, week)}</span>'
+               f'{right}</div>')
+
+        tab_active = "booknotes" if sub in ("booknotes_new", "booknotes_edit") else sub
+        tabs = '<div class="week-tabs">'
+        for tab_sub, label in [("", "总览"), ("detail", "时间明细"), ("booknotes", "读书笔记")]:
+            is_act = (tab_active is None and tab_sub == "") or (tab_sub != "" and tab_active == tab_sub)
+            cls = " active" if is_act else ""
+            tabs += (f'<span class="tab{cls}" '
+                     f'onclick="navTab(\'{tab_sub}\',{year},{week})">{label}</span>')
+        tabs += '</div>'
+
+        return nav + tabs
+
+    # ── 周报内容 ──────────────────────────────────────────────────────────────
+
+    @objc.python_method
+    def _build_week_content(self, year: int, week: int) -> str:
+        stats = get_week_stats(year, week)
+        weeks = get_all_weeks()
+        prev_stats = None
+        for i, (y, w, _ds, _de) in enumerate(weeks):
+            if y == year and w == week and i + 1 < len(weeks):
+                prev_stats = get_week_stats(*weeks[i + 1][:2])
+                break
+
+        total      = stats["total_seconds"]
+        prev_total = prev_stats["total_seconds"] if prev_stats else None
+        chg_text, chg_dir = fmt_change(total, prev_total)
+        chg_span = (f'<span class="{chg_dir}" style="margin-left:8px;font-size:12px;">'
+                    f'{chg_text}</span>') if chg_text else ""
+
+        html  = self._build_week_header(year, week, None)
+        html += f'<div class="total-row">{fmt_duration(total)}{chg_span}</div>'
+
+        html += '<div class="card-grid">'
+        for cat in CATEGORIES:
+            cat_data  = stats["by_category"].get(cat, {"seconds": 0})
+            prev_cat  = (prev_stats["by_category"].get(cat, {"seconds": 0})
+                         if prev_stats else None)
+            secs      = cat_data["seconds"]
+            prev_secs = prev_cat["seconds"] if prev_cat else None
+            ct, cd    = fmt_change(secs, prev_secs)
+            color     = COLORS[cat]
+            chg_div   = (f'<div class="card-change {cd}">{ct}</div>'
+                         if ct else '<div class="card-change flat">&nbsp;</div>')
+            html += (f'<div class="card">'
+                     f'<div class="card-label">'
+                     f'<span class="dot" style="background:{color}"></span>{cat}</div>'
+                     f'<div class="card-value">{fmt_duration(secs)}</div>'
+                     f'{chg_div}</div>')
+        html += '</div>'
+
+        DAY_NAMES   = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        sorted_days = sorted(stats["by_day"].keys())
+        labels = []
+        for d in sorted_days:
+            try:
+                labels.append(DAY_NAMES[_date.fromisoformat(d).isoweekday() - 1])
+            except Exception:
+                labels.append(d)
+
+        cat_rgb = {
+            "自主学习": "155,114,207", "学校学习": "91,141,239",
+            "娱乐": "78,205,196",     "其他": "184,188,200",
+        }
+        datasets = []
+        for cat in CATEGORIES:
+            data = [stats["by_day"][d].get(cat, 0) / 60 for d in sorted_days]
+            rgb  = cat_rgb.get(cat, "184,188,200")
+            datasets.append({
+                "label": cat, "data": data,
+                "backgroundColor": f"rgba({rgb},0.85)",
+                "borderRadius": 3, "barThickness": 10, "stack": "main",
+            })
+        chart_json = json.dumps({"labels": labels, "datasets": datasets}, ensure_ascii=False)
+
+        html += f"""<div class="chart-wrap"><canvas id="weekChart" height="120"></canvas></div>
+<script>(function(){{
+  if(window._weekChart)window._weekChart.destroy();
+  window._weekChart=new Chart(document.getElementById('weekChart').getContext('2d'),{{
+    type:'bar',data:{chart_json},
+    options:{{responsive:true,plugins:{{legend:{{display:false}},
+      tooltip:{{callbacks:{{label:function(c){{
+        var m=c.parsed.y,h=Math.floor(m/60),mn=Math.round(m%60);
+        return c.dataset.label+': '+(h>0?h+'h '+(mn<10?'0':'')+mn+'m':mn+'m');
+      }}}}}}}},
+      scales:{{x:{{stacked:true,grid:{{display:false}}}},y:{{stacked:true,display:false}}}}
+    }}
+  }});
+}})();</script>"""
+
+        reflection = get_reflection(year, week) or ""
+
+        def he(s):
+            return (s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+
+        html += (f'<hr class="sec-div">'
+                 f'<div style="font-size:12px;color:#8E8E93;margin-bottom:6px;">本周 reflection</div>'
+                 f'<textarea id="reflection" rows="4" style="min-height:80px;">{he(reflection)}</textarea>'
+                 f'<div style="margin-top:8px;text-align:right;">'
+                 f'<button class="btn btn-primary" onclick="saveReflection({year},{week})">保存</button></div>')
+        return html
+
+    @objc.python_method
+    def _build_detail_content(self, year: int, week: int) -> str:
+        stats = get_week_stats(year, week)
+        html  = self._build_week_header(year, week, "detail")
+
+        # ── 饼图 ──────────────────────────────────────────────────────────────
+        pie_labels, pie_data, pie_colors, legend_html = [], [], [], ""
+        for cat in CATEGORIES:
+            secs = stats["by_category"].get(cat, {}).get("seconds", 0)
+            if secs <= 0:
+                continue
+            color = COLORS[cat]
+            pie_labels.append(cat)
+            pie_data.append(round(secs / 60))
+            pie_colors.append(color)
+            legend_html += (
+                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'
+                f'<div style="width:8px;height:8px;border-radius:2px;background:{color};flex-shrink:0;"></div>'
+                f'<span style="font-size:13px;color:#1C1C1E;min-width:70px;">{cat}</span>'
+                f'<span style="font-size:13px;color:#8E8E93;">{fmt_duration(secs)}</span>'
+                f'</div>'
+            )
+
+        if pie_data:
+            pie_json = json.dumps({
+                "labels": pie_labels,
+                "datasets": [{"data": pie_data, "backgroundColor": pie_colors, "borderWidth": 0}],
+            }, ensure_ascii=False)
+            html += f"""<div style="width:320px;margin:0 auto 24px;padding:16px 70px;">
+<canvas id="detailPieChart" width="150" height="150"
+  style="display:block;margin:0 auto;"></canvas>
+</div>
+<script>(function(){{
+  function fmtMin(m){{var h=Math.floor(m/60),mn=Math.round(m%60);if(h>0&&mn>0)return h+'h '+mn+'m';if(h>0)return h+'h';return mn+'m';}}
+  var outsideLabels={{
+    id:'outsideLabels',
+    afterDraw:function(chart){{
+      var ctx=chart.ctx;
+      var cx=chart.chartArea.left+chart.chartArea.width/2;
+      var cy=chart.chartArea.top+chart.chartArea.height/2;
+      var r=Math.min(chart.chartArea.width,chart.chartArea.height)/2;
+      chart.data.datasets[0].data.forEach(function(val,i){{
+        if(!val)return;
+        var meta=chart.getDatasetMeta(0);
+        var arc=meta.data[i];
+        var angle=(arc.startAngle+arc.endAngle)/2;
+        var isRight=Math.cos(angle)>=0;
+        var x1=cx+r*0.9*Math.cos(angle);
+        var y1=cy+r*0.9*Math.sin(angle);
+        var x2=cx+r*1.2*Math.cos(angle);
+        var y2=cy+r*1.2*Math.sin(angle);
+        var x3=x2+(isRight?20:-20);
+        ctx.beginPath();
+        ctx.moveTo(x1,y1);
+        ctx.lineTo(x2,y2);
+        ctx.lineTo(x3,y2);
+        ctx.strokeStyle='#C8C8C8';
+        ctx.lineWidth=0.8;
+        ctx.stroke();
+        var label=chart.data.labels[i];
+        var duration=fmtMin(val);
+        ctx.fillStyle='#1C1C1E';
+        ctx.font='10px -apple-system,BlinkMacSystemFont,sans-serif';
+        ctx.textAlign=isRight?'left':'right';
+        ctx.textBaseline='middle';
+        ctx.fillText(label+' '+duration,x3+(isRight?4:-4),y2);
+      }});
+    }}
+  }};
+  if(window._detailPie)window._detailPie.destroy();
+  window._detailPie=new Chart(document.getElementById('detailPieChart').getContext('2d'),{{
+    type:'doughnut',data:{pie_json},
+    options:{{cutout:'60%',plugins:{{legend:{{display:false}},
+      tooltip:{{callbacks:{{label:function(ctx){{return fmtMin(ctx.parsed);}}}}}}}}
+    }},
+    plugins:[outsideLabels]
+  }});
+}})();</script>
+<hr style="border:none;border-top:0.5px solid #E0E0E0;margin:0 0 20px;">"""
+
+        any_data = False
+
+        for cat in CATEGORIES:
+            cat_data  = stats["by_category"].get(cat, {"seconds": 0, "sub": {}})
+            sub_dict  = cat_data.get("sub", {})
+            total_s   = cat_data.get("seconds", 0)
+            if not sub_dict:
+                continue
+            any_data = True
+            color     = COLORS[cat]
+            sub_items = sorted(sub_dict.items(), key=lambda x: -x[1])
+            max_s     = sub_items[0][1] if sub_items else 1
+
+            html += (f'<div style="margin-bottom:20px;">'
+                     f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">'
+                     f'<span style="width:7px;height:7px;border-radius:2px;background:{color};'
+                     f'flex-shrink:0;display:inline-block;"></span>'
+                     f'<span style="font-size:13px;font-weight:500;color:{color};">{cat}</span>'
+                     f'<span style="font-size:12px;color:#8E8E93;margin-left:4px;">'
+                     f'{fmt_duration(total_s)}</span></div>')
+
+            for name, secs in sub_items:
+                pct = int(secs / max_s * 100) if max_s else 0
+                op  = round(0.4 + 0.6 * (secs / max_s), 2) if max_s else 1.0
+                html += (
+                    f'<div style="display:flex;align-items:center;margin-bottom:7px;">'
+                    f'<span style="width:80px;font-size:12px;color:#8E8E93;text-align:right;'
+                    f'flex-shrink:0;padding-right:10px;overflow:hidden;white-space:nowrap;'
+                    f'text-overflow:ellipsis;">{name}</span>'
+                    f'<div style="flex:1;height:8px;border-radius:4px;background:#F0F0F0;">'
+                    f'<div style="width:{pct}%;height:8px;border-radius:4px;background:{color};'
+                    f'opacity:{op};"></div></div>'
+                    f'<span style="width:50px;font-size:12px;color:#1C1C1E;margin-left:8px;'
+                    f'flex-shrink:0;">{fmt_duration(secs)}</span>'
+                    f'</div>'
+                )
+            html += '</div>'
+
+        if not any_data:
+            html += ('<div style="font-size:13px;color:#8E8E93;text-align:center;'
+                     'padding:30px 0;">本周暂无数据</div>')
+        return html
+
+    @objc.python_method
+    def _build_booknotes_content(self, year: int, week: int, toast=None) -> str:
+        import json as _json
+        notes = get_book_notes()
+
+        def he(s):
+            return (s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
+
+        html  = self._build_week_header(year, week, "booknotes")
+        html += (f'<button class="new-note-btn" '
+                 f'onclick="xdNav(\'xd://navigate_booknotes_new?year={year}&week={week}\')">＋ 新增笔记</button>')
+
+        if not notes:
+            html += ('<div style="font-size:13px;color:#8E8E93;'
+                     'text-align:center;padding:20px 0;">还没有笔记，写第一篇吧</div>')
+        else:
+            for note in notes:
+                nid       = note["id"]
+                title_raw = note.get("title") or ""
+                title     = he(title_raw)
+                author    = he(note.get("author") or "")
+                tags_raw  = note.get("tags") or ""
+                content   = note.get("content") or ""
+                date_read = he(note.get("date_read") or "")
+                tag_pills = "".join(f'<span class="tag-pill">{he(t)}</span>'
+                                    for t in tags_raw.split() if t)
+                author_s  = (f'<span style="font-size:12px;color:#8E8E93;margin-left:6px;">'
+                             f'{author}</span>') if author else ""
+                date_s    = (f'<span style="font-size:11px;color:#8E8E93;margin-right:8px;">'
+                             f'{date_read}</span>') if date_read else ""
+                # Title safe for use inside single-quoted JS string
+                title_js  = title_raw.replace("\\", "\\\\").replace("'", "\\'").replace('"', "&quot;").replace("&", "&amp;")
+                del_onclick = (f"if(confirm('确定要删除《{title_js}》这条笔记吗？'))"
+                               f"{{deleteBookNote({nid})}}")
+
+                html += f"""<div class="note-card">
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
+  <div><span style="font-size:14px;font-weight:500;">{title}</span>{author_s}</div>
+  <div style="display:flex;gap:6px;align-items:center;">
+    <button id="note-toggle-{nid}"
+      style="font-size:11px;color:#8E8E93;border:none;background:none;cursor:pointer;padding:4px 0;"
+      onclick="toggleNote({nid})">展开 ▾</button>
+    <button class="btn btn-secondary" style="font-size:11px;padding:2px 8px;"
+      onclick="xdNav('xd://navigate_booknotes_edit?year={year}&week={week}&id={nid}')">编辑</button>
+    <button class="btn btn-secondary" style="font-size:11px;padding:2px 8px;"
+      onclick="{del_onclick}">删除</button>
+  </div>
+</div>
+<div style="margin-bottom:4px;">{date_s}{tag_pills}</div>
+<div id="note-content-{nid}"
+  style="display:none;margin-top:8px;font-size:13px;color:#4D4D4D;line-height:1.6;white-space:pre-wrap;">{he(content)}</div>
+</div>"""
+
+        if toast:
+            html += f'<script>setTimeout(function(){{showToast({_json.dumps(toast)});}},50);</script>'
+        return html
+
+    # ── 读书笔记 新增/编辑 页面 ────────────────────────────────────────────────
+
+    @objc.python_method
+    def _build_booknotes_new_content(self, year: int, week: int, prefill=None) -> str:
+        import json as _json
+
+        def he(s):
+            return (s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
+
+        editing  = prefill is not None
+        nid      = prefill.get("id", "") if editing else ""
+        f_title  = he(prefill.get("title",   "") if editing else "")
+        f_author = he(prefill.get("author",  "") if editing else "")
+        f_tags   = he(prefill.get("tags",    "") if editing else "")
+        f_cont   = he(prefill.get("content", "") if editing else "")
+
+        orig = _json.dumps({
+            "title":   f_title,
+            "author":  f_author,
+            "tags":    f_tags,
+            "content": f_cont,
+        })
+        confirm_msg = ("有未保存的更改，确定要离开吗？" if editing
+                       else "有未保存的笔记，确定要离开吗？")
+
+        html  = self._build_week_header(year, week, "booknotes")
+        html += f"""
+<script>
+var _original = {orig};
+function _fieldVal(id){{return document.getElementById(id).value;}}
+function checkUnsaved(){{
+  var changed = _fieldVal('inp-title')   !== _original.title   ||
+                _fieldVal('inp-author')  !== _original.author  ||
+                _fieldVal('inp-tags')    !== _original.tags    ||
+                _fieldVal('inp-content') !== _original.content;
+  if(changed && !confirm('{confirm_msg}'))return;
+  xdNav('xd://navigate_booknotes_history');
+}}
+function doSave(){{
+  var t=_fieldVal('inp-title');
+  if(!t.trim()){{alert('书名不能为空');return;}}
+  var a=encodeURIComponent(_fieldVal('inp-author'));
+  var g=encodeURIComponent(_fieldVal('inp-tags'));
+  var c=encodeURIComponent(_fieldVal('inp-content'));
+  t=encodeURIComponent(t);
+"""
+        if editing:
+            html += f"  xdNav('xd://update_book_note?id={nid}&title='+t+'&author='+a+'&tags='+g+'&content='+c);\n"
+        else:
+            html += f"  xdNav('xd://save_book_note?year={year}&week={week}&title='+t+'&author='+a+'&tags='+g+'&content='+c);\n"
+        html += f"""}}
+</script>
+<div class="form-card">
+<input type="text" id="inp-title" placeholder="书名（必填）" value="{f_title}"
+  style="width:100%;box-sizing:border-box;margin-bottom:8px;">
+<input type="text" id="inp-author" placeholder="作者（选填）" value="{f_author}"
+  style="width:100%;box-sizing:border-box;margin-bottom:8px;">
+<input type="text" id="inp-tags" placeholder="标签，用空格分隔（选填）" value="{f_tags}"
+  style="width:100%;box-sizing:border-box;margin-bottom:8px;">
+<textarea id="inp-content" placeholder="写下你的感想..." rows="6"
+  style="width:100%;box-sizing:border-box;min-height:120px;">{f_cont}</textarea>
+</div>
+<div style="display:flex;gap:8px;padding:0 2px;">
+  <button class="btn btn-secondary" onclick="checkUnsaved()">← 返回</button>
+  <div style="flex:1;"></div>
+"""
+        if editing:
+            html += (f'  <button class="btn btn-danger" '
+                     f'onclick="if(confirm(\'确定要删除这条笔记吗？\'))'
+                     f'xdNav(\'xd://delete_book_note?id={nid}\')">删除记录</button>\n'
+                     f'  <button class="btn btn-primary" onclick="doSave()">保存更新</button>\n')
+        else:
+            html += '  <button class="btn btn-primary" onclick="doSave()">保存</button>\n'
+        html += '</div>'
+        return html
+
+    # ── 月报内容 ──────────────────────────────────────────────────────────────
+
+    @objc.python_method
+    def _build_month_content(self, year: int, month: int) -> str:
+        stats  = get_month_stats(year, month)
+        months = get_all_months()
+        prev_stats = None
+        for i, (y, m) in enumerate(months):
+            if y == year and m == month and i + 1 < len(months):
+                prev_stats = get_month_stats(*months[i + 1])
+                break
+
+        total      = stats["total_seconds"]
+        prev_total = prev_stats["total_seconds"] if prev_stats else None
+        chg_text, chg_dir = fmt_change(total, prev_total)
+        chg_span = (f'<span class="{chg_dir}" style="margin-left:8px;font-size:12px;">'
+                    f'{chg_text}</span>') if chg_text else ""
+
+        html  = f'<div class="page-title">{year}年{month}月</div>'
+        html += f'<div class="total-row" style="margin-top:0;">{fmt_duration(total)}{chg_span}</div>'
+
+        html += '<div class="card-grid">'
+        for cat in CATEGORIES:
+            cat_data  = stats["by_category"].get(cat, {"seconds": 0})
+            prev_cat  = (prev_stats["by_category"].get(cat, {"seconds": 0})
+                         if prev_stats else None)
+            secs      = cat_data["seconds"]
+            prev_secs = prev_cat["seconds"] if prev_cat else None
+            ct, cd    = fmt_change(secs, prev_secs)
+            color     = COLORS[cat]
+            chg_div   = (f'<div class="card-change {cd}">{ct}</div>'
+                         if ct else '<div class="card-change flat">&nbsp;</div>')
+            html += (f'<div class="card">'
+                     f'<div class="card-label">'
+                     f'<span class="dot" style="background:{color}"></span>{cat}</div>'
+                     f'<div class="card-value">{fmt_duration(secs)}</div>{chg_div}</div>')
+        html += '</div>'
+
+        by_week = stats.get("by_week", [])
+        cat_rgb = {
+            "自主学习": "155,114,207", "学校学习": "91,141,239",
+            "娱乐": "78,205,196",     "其他": "184,188,200",
+        }
+        labels = []
+        for w in by_week:
+            ds_str = w.get("date_start", "")
+            if ds_str:
+                ds = _date.fromisoformat(ds_str)
+                de = ds + _timedelta(days=6)
+                if ds.month == de.month:
+                    lbl = f"{ds.month:02d}/{ds.day:02d}-{de.day:02d}"
+                else:
+                    lbl = f"{ds.month:02d}/{ds.day:02d}-{de.month:02d}/{de.day:02d}"
+            else:
+                lbl = f"W{w['week']}"
+            labels.append(lbl)
+
+        datasets = []
+        for cat in CATEGORIES:
+            data = [w.get(cat, 0) / 60 for w in by_week]
+            rgb  = cat_rgb.get(cat, "184,188,200")
+            datasets.append({
+                "label": cat, "data": data,
+                "backgroundColor": f"rgba({rgb},0.85)",
+                "borderRadius": 3, "barThickness": 10, "stack": "main",
+            })
+        chart_json = json.dumps({"labels": labels, "datasets": datasets}, ensure_ascii=False)
+
+        html += f"""<div class="chart-wrap"><canvas id="monthChart" height="120"></canvas></div>
+<script>(function(){{
+  if(window._monthChart)window._monthChart.destroy();
+  window._monthChart=new Chart(document.getElementById('monthChart').getContext('2d'),{{
+    type:'bar',data:{chart_json},
+    options:{{responsive:true,plugins:{{legend:{{display:false}},
+      tooltip:{{callbacks:{{label:function(c){{
+        var m=c.parsed.y,h=Math.floor(m/60),mn=Math.round(m%60);
+        return c.dataset.label+': '+(h>0?h+'h '+(mn<10?'0':'')+mn+'m':mn+'m');
+      }}}}}}}},
+      scales:{{x:{{stacked:true,grid:{{display:false}},
+        ticks:{{maxRotation:0,font:{{size:10}}}}}},y:{{stacked:true,display:false}}}}
+    }}
+  }});
+}})();</script>"""
+
+        html += (f'<div style="display:flex;gap:16px;margin:14px 0 0;">'
+                 f'<span style="font-size:13px;color:#8E8E93;cursor:pointer;" '
+                 f'onclick="navigateSub(\'pages\',{year},{month})">页面使用时间 →</span>'
+                 f'<span style="font-size:13px;color:#8E8E93;cursor:pointer;" '
+                 f'onclick="navigateSub(\'ranking\',{year},{month})">时间排行 →</span>'
+                 f'</div>')
+
+        reflection = (get_monthly_reflection(year, month) or "").replace("&", "&amp;").replace("<", "&lt;").replace('"', "&quot;")
+        html += (f'<div style="border-top:.5px solid #E0E0E0;padding-top:14px;margin-top:16px;">'
+                 f'<div style="font-size:12px;color:#8E8E93;margin-bottom:6px;">本月 reflection</div>'
+                 f'<textarea id="monthly_reflection" rows="4">{reflection}</textarea>'
+                 f'<div style="text-align:right;margin-top:8px;">'
+                 f'<button class="btn btn-primary" '
+                 f'onclick="saveMonthlyReflection({year},{month},'
+                 f'document.getElementById(\'monthly_reflection\').value)">保存</button>'
+                 f'</div></div>')
+        return html
+
+    @objc.python_method
+    def _build_top_pages_content(self, year: int, month: int) -> str:
+        stats     = get_month_stats(year, month)
+        top_pages = stats.get("top_pages", [])
+
+        def he(s):
+            return (s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+
+        html = f'<div class="page-title">{month}月 · 页面使用 Top 10</div><div style="margin-top:14px;">'
+
+        if not top_pages:
+            return html + '<div style="font-size:13px;color:#8E8E93;text-align:center;padding:20px 0;">暂无数据</div></div>'
+
+        max_secs = top_pages[0]["seconds"] or 1
+        for i, page in enumerate(top_pages):
+            title = he(page.get("title") or page.get("url") or "")
+            url   = he(page.get("url") or "")
+            app   = he(page.get("app") or "")
+            secs  = page.get("seconds", 0)
+            pct   = int(secs / max_secs * 100)
+            html += (f'<div class="page-row">'
+                     f'<div class="page-idx">{i+1}</div>'
+                     f'<div class="page-info">'
+                     f'<div class="page-title-t">{title or url}</div>'
+                     f'<div class="page-url-t">{app} · {url}</div>'
+                     f'<div class="prog-bg"><div class="prog-fill" style="width:{pct}%;background:#B8BCC8;"></div></div>'
+                     f'</div><div class="page-dur">{fmt_duration(secs)}</div></div>')
+        return html + '</div>'
+
+    @objc.python_method
+    def _build_ranking_content(self, year: int, month: int) -> str:
+        stats       = get_month_stats(year, month)
+        by_category = stats.get("by_category", {})
+
+        items = []
+        for l1, cat_data in by_category.items():
+            for l2, secs in cat_data.get("sub", {}).items():
+                if secs >= 300:
+                    items.append((l1, l2, secs))
+        items.sort(key=lambda x: -x[2])
+        items = items[:15]
+
+        html = f'<div class="page-title">{year}年{month}月 · 时间排行</div>'
+        if not items:
+            return (html + '<div style="font-size:13px;color:#8E8E93;text-align:center;'
+                    'padding:30px 0;">暂无数据</div>')
+
+        max_s = items[0][2]
+        html += '<div style="margin-top:14px;">'
+        for i, (l1, l2, secs) in enumerate(items):
+            color = COLORS.get(l1, "#B8BCC8")
+            pct   = int(secs / max_s * 100) if max_s else 0
+            html += (
+                f'<div style="display:flex;align-items:center;margin-bottom:9px;">'
+                f'<span style="width:20px;font-size:11px;color:#8E8E93;flex-shrink:0;">{i+1}</span>'
+                f'<span style="width:100px;font-size:12px;color:#1C1C1E;overflow:hidden;'
+                f'white-space:nowrap;text-overflow:ellipsis;flex-shrink:0;">{l2}</span>'
+                f'<span style="width:5px;height:5px;border-radius:50%;background:{color};'
+                f'flex-shrink:0;margin-right:8px;display:inline-block;"></span>'
+                f'<div style="flex:1;height:8px;border-radius:4px;background:#F0F0F0;">'
+                f'<div style="width:{pct}%;height:8px;border-radius:4px;background:{color};"></div>'
+                f'</div>'
+                f'<span style="width:50px;font-size:12px;color:#1C1C1E;margin-left:8px;'
+                f'flex-shrink:0;text-align:right;">{fmt_duration(secs)}</span>'
+                f'</div>'
+            )
+        return html + '</div>'
+
+    # ── WKNavigationDelegate ─────────────────────────────────────────────────
+
+    def webView_decidePolicyForNavigationAction_decisionHandler_(
+            self, webview, action, handler):
+        url = action.request().URL()
+        if url is not None and url.scheme() == "xd":
+            handler(0)
+            self._handle_action(url)
+        else:
+            handler(1)
+
+    @objc.python_method
+    def _handle_action(self, url):
+        action = url.host() or ""
+        qs = urllib.parse.parse_qs(url.query() or "", keep_blank_values=True)
+
+        def _int(key):
+            return int(qs[key][0]) if key in qs else None
+
+        def _str(key):
+            return urllib.parse.unquote(qs[key][0]) if key in qs else ""
+
+        if action == "navigate_week":
+            y, w = _int("year"), _int("week")
+            if y and w:
+                self._render_week(y, w)
+
+        elif action == "navigate_week_sub":
+            y, w, sub = _int("year"), _int("week"), _str("sub")
+            if y and w:
+                self._render_week(y, w, sub or None)
+
+        elif action == "navigate_week_month":
+            # Click on a month entry in the week sidebar section
+            y, m = _int("year"), _int("month")
+            if y and m:
+                target = None
+                for wy, ww, ds, _de in get_all_weeks():
+                    d_start = _date.fromisoformat(ds)
+                    if d_start.year == y and d_start.month == m:
+                        target = (wy, ww)
+                        break  # newest-first → first match is latest week in that month
+                if target is None:
+                    # No data: first ISO week containing the 1st of that month
+                    d = _date(y, m, 1)
+                    wy, ww, _ = d.isocalendar()
+                    target = (wy, ww)
+                self._render_week(*target)
+
+        elif action == "navigate_month":
+            y, m = _int("year"), _int("month")
+            if y and m:
+                self._render_month(y, m)
+
+        elif action == "navigate_month_sub":
+            y, m, sub = _int("year"), _int("month"), _str("sub")
+            if y and m:
+                self._render_month(y, m, sub or None)
+
+        elif action == "save_reflection":
+            y, w, content = _int("year"), _int("week"), _str("content")
+            if y and w:
+                save_reflection(y, w, content)
+                self._render_week(y, w, self._current_sub)
+
+        elif action == "navigate_booknotes_history":
+            self._render_booknotes_history()
+
+        elif action == "navigate_booknotes_new":
+            y, w = _int("year"), _int("week")
+            if y and w:
+                self._editing_note = None
+                self._render_week(y, w, sub="booknotes_new")
+
+        elif action == "navigate_booknotes_edit":
+            y, w, nid = _int("year"), _int("week"), _int("id")
+            if y and w and nid:
+                all_notes = get_book_notes()
+                note = next((n for n in all_notes if n["id"] == nid), None)
+                self._editing_note = note
+                self._render_week(y, w, sub="booknotes_edit")
+
+        elif action == "save_book_note":
+            y, w = _int("year"), _int("week")
+            save_book_note(
+                _str("title"), _str("author"),
+                _str("date_read"), _str("tags"), _str("content"),
+            )
+            if y and w:
+                self._render_week(y, w, sub="booknotes", toast="已保存")
+            elif self._current_type == "week" and self._current_key:
+                self._render_week(*self._current_key, sub="booknotes", toast="已保存")
+
+        elif action == "update_book_note":
+            note_id = _int("id")
+            if note_id:
+                update_book_note(
+                    note_id,
+                    _str("title"), _str("author"),
+                    _str("date_read"), _str("tags"), _str("content"),
+                )
+                if self._current_type == "week" and self._current_key:
+                    self._render_week(*self._current_key, sub="booknotes", toast="已更新")
+
+        elif action == "delete_book_note":
+            note_id = _int("id")
+            if note_id:
+                delete_book_note(note_id)
+                self._render_booknotes_history(toast="已删除")
+
+        elif action == "navigate_month_pages":
+            y, m = _int("year"), _int("month")
+            if y and m:
+                self._render_month(y, m, sub="pages")
+
+        elif action == "save_monthly_reflection":
+            y, m, content = _int("year"), _int("month"), _str("content")
+            if y and m:
+                save_monthly_reflection(y, m, content)
+                self._webview.evaluateJavaScript_completionHandler_(
+                    'showToast("已保存")', None
+                )
+
+
+# ── 对外接口 ──────────────────────────────────────────────────────────────────
+
+_instance = None
+
+
+def show_report_window():
+    global _instance
+    if _instance is None:
+        _instance = ReportWindow.alloc().init()
+    _instance.show()

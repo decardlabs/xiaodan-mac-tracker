@@ -24,7 +24,7 @@ import os
 import shutil
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
 try:
@@ -78,6 +78,12 @@ HARDCODED_DOMAINS: dict[str, str] = {
     "translate.google.com":    "学校学习/工具",
     "google.com":              "其他/工具/搜索",
     "linkedin.com":            "其他/工具/搜索",
+    "app.trading212.com":      "其他/工具",
+    "trading212.com":          "其他/工具",
+    # Outlook（多个子域）
+    "outlook.cloud.microsoft": "学校学习/工具",
+    "outlook.live.com":        "学校学习/工具",
+    "outlook.office.com":      "学校学习/工具",
 }
 
 SYSTEM_PROMPT = f"""你是一个个人时间管理分析助手，对用户的 Mac 上网和应用使用记录分类。
@@ -127,10 +133,44 @@ def extract_domain(url: str) -> str:
         return ""
 
 
-def get_hardcoded_category(domain: str, app_name: str, activity_type: str) -> str | None:
+_DISSERTATION_KEYWORDS = [
+    "dissertation", "毕业论文", "学位论文", "thesis",
+    "literature review", "文献综述", "开题", "答辩", "论文-",
+]
+
+
+_AI_TOOL_TITLE_MARKERS = [
+    "- claude",       # Claude.ai（URL 有时为空）
+    "- chatgpt",      # ChatGPT
+    "- gemini",       # Google Gemini
+    "claude.ai",
+]
+
+_BILIBILI_TITLE_MARKERS = [
+    "哔哩哔哩",
+    "bilibili",
+]
+
+
+def get_hardcoded_category(
+    domain: str, app_name: str, activity_type: str, window_title: str = "", url: str = ""
+) -> str | None:
     """硬编码规则优先匹配，返回类别字符串或 None。"""
+    if "Safari" in (app_name or "") and not (url or "").strip() and not (window_title or "").strip():
+        return "其他/系统后台"
+    title_lower = window_title.lower()
+    if any(kw in title_lower for kw in _DISSERTATION_KEYWORDS):
+        return "学校学习/论文相关"
     if activity_type in ("idle", "dock"):
         return "其他/系统后台"
+    if url.startswith("favorites://"):
+        return "其他/系统后台"
+    if window_title in ("起始页", "Start Page") and not url and not domain:
+        return "其他/系统后台"
+    if any(m in title_lower for m in _AI_TOOL_TITLE_MARKERS):
+        return "自主学习/AI工具"
+    if any(m in title_lower for m in _BILIBILI_TITLE_MARKERS):
+        return "娱乐/视频"
     app = app_name or ""
     if "Zotero" in app:
         return "学校学习/文献管理"
@@ -353,7 +393,7 @@ def classify_activity_log(
     keys_for_lookup: set[str] = set()
     for r in records:
         domain = extract_domain(r["url"])
-        if get_hardcoded_category(domain, r["app_name"], r["activity_type"]) is None:
+        if get_hardcoded_category(domain, r["app_name"], r["activity_type"], r["window_title"], r["url"]) is None:
             keys_for_lookup.add(cache_key(domain, r["app_name"]))
 
     key_map = resolve_key_map(conn, client, keys_for_lookup)
@@ -362,7 +402,7 @@ def classify_activity_log(
     updates: list[tuple[str, int]] = []
     for r in records:
         domain = extract_domain(r["url"])
-        hc = get_hardcoded_category(domain, r["app_name"], r["activity_type"])
+        hc = get_hardcoded_category(domain, r["app_name"], r["activity_type"], r["window_title"], r["url"])
         if hc:
             cat = hc
         else:
@@ -372,6 +412,14 @@ def classify_activity_log(
     conn.executemany("UPDATE activity_log SET category = ? WHERE id = ?", updates)
     conn.commit()
     print(f"  ✓ 完成 {len(updates)} 条")
+    try:
+        from Foundation import NSDistributedNotificationCenter
+        NSDistributedNotificationCenter.defaultCenter() \
+            .postNotificationName_object_userInfo_(
+                "XiaoDanClassifierDone", None, None
+            )
+    except Exception:
+        pass
     return len(updates)
 
 
@@ -386,29 +434,33 @@ def import_safari_history(
         print("未找到 ~/Library/Safari/History.db，跳过 Safari 导入。")
         return 0
 
-    tmp = "/tmp/safari_history_copy.db"
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        tmp = f.name
     shutil.copy2(src, tmp)
     try:
         safari = sqlite3.connect(tmp)
-        q = """
-            SELECT hi.url, COALESCE(hv.title, ''), hv.visit_time
-            FROM history_visits hv
-            JOIN history_items hi ON hv.history_item = hi.id
-            WHERE hv.visit_time > 0
-        """
-        params: list = []
-        if since_date:
-            # Cocoa 时间戳 = Unix 时间戳 - COCOA_EPOCH
-            since_unix = datetime.strptime(since_date, "%Y-%m-%d").replace(
-                tzinfo=timezone.utc
-            ).timestamp()
-            params.append(since_unix - COCOA_EPOCH)
-            q += " AND hv.visit_time >= ?"
-        rows = safari.execute(q, params).fetchall()
-        safari.close()
+        try:
+            q = """
+                SELECT hi.url, COALESCE(hv.title, ''), hv.visit_time
+                FROM history_visits hv
+                JOIN history_items hi ON hv.history_item = hi.id
+                WHERE hv.visit_time > 0
+            """
+            params: list = []
+            if since_date:
+                # Cocoa 时间戳 = Unix 时间戳 - COCOA_EPOCH
+                since_unix = datetime.strptime(since_date, "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                ).timestamp()
+                params.append(since_unix - COCOA_EPOCH)
+                q += " AND hv.visit_time >= ?"
+            rows = safari.execute(q, params).fetchall()
+        finally:
+            safari.close()
     finally:
         if os.path.exists(tmp):
-            os.unlink(tmp)  # 用完立即删除，不在 /tmp 留存浏览历史
+            os.unlink(tmp)  # 用完立即删除，不留存浏览历史
 
     if not rows:
         print("Safari 历史：没有可导入的记录。")
@@ -448,7 +500,7 @@ def import_safari_history(
     keys_for_lookup: set[str] = set()
     for r in records:
         domain = extract_domain(r["url"])
-        if get_hardcoded_category(domain, "", "browser") is None:
+        if get_hardcoded_category(domain, "", "browser", url=r["url"]) is None:
             keys_for_lookup.add(cache_key(domain, ""))
 
     key_map = resolve_key_map(conn, client, keys_for_lookup)
@@ -456,7 +508,7 @@ def import_safari_history(
     updates: list[tuple[str, int]] = []
     for r in records:
         domain = extract_domain(r["url"])
-        hc = get_hardcoded_category(domain, "", "browser")
+        hc = get_hardcoded_category(domain, "", "browser", url=r["url"])
         cat = hc if hc else key_map.get(cache_key(domain, ""), "其他/待分类")
         updates.append((cat, r["id"]))
 
@@ -499,6 +551,81 @@ def print_distribution(conn: sqlite3.Connection) -> None:
 
 
 # ── 主程序 ────────────────────────────────────────────────────────────────────
+def recheck_other_category(
+    conn: sqlite3.Connection,
+    client: "anthropic.Anthropic | None",
+    date_str: str | None = None,
+) -> int:
+    """重新检查 category LIKE '其他%'（排除系统后台）的记录。
+    先走更新后的硬编码规则，再对剩余记录强制调 API。
+    只有新分类不以「其他」开头时才更新数据库。
+    """
+    target_date = date_str or str(date.today())
+    rows = conn.execute(
+        """SELECT id, app_name, window_title, url, activity_type
+           FROM activity_log
+           WHERE date = ?
+             AND category LIKE '其他%'
+             AND category != '其他/系统后台'""",
+        (target_date,),
+    ).fetchall()
+
+    if not rows:
+        print(f"没有需要重新检查的「其他」记录（{target_date}）。")
+        return 0
+
+    print(f"重新检查 {len(rows)} 条「其他」记录…")
+
+    # 第一轮：硬编码规则（规则可能已更新）
+    hard_updates: list[tuple[str, int]] = []
+    remaining = []
+    for rid, app, title, url, atype in rows:
+        domain = extract_domain(url or "")
+        hc = get_hardcoded_category(domain, app, atype, title, url or "")
+        if hc and not hc.startswith("其他"):
+            hard_updates.append((hc, rid))
+        else:
+            remaining.append((rid, app, title, url, atype))
+
+    if hard_updates:
+        conn.executemany("UPDATE activity_log SET category = ? WHERE id = ?", hard_updates)
+        conn.commit()
+        print(f"  硬编码规则更新: {len(hard_updates)} 条")
+
+    if not remaining:
+        return len(hard_updates)
+
+    if client is None:
+        print(f"  [提示] 无 API 客户端，跳过剩余 {len(remaining)} 条 API 重分类")
+        return len(hard_updates)
+
+    # 第二轮：清除缓存后强制走 API
+    keys: set[str] = set()
+    for rid, app, title, url, atype in remaining:
+        keys.add(cache_key(extract_domain(url or ""), app))
+
+    for k in keys:
+        conn.execute("DELETE FROM domain_categories WHERE domain = ?", (k,))
+    conn.commit()
+
+    key_map = resolve_key_map(conn, client, keys)
+
+    api_updates: list[tuple[str, int]] = []
+    for rid, app, title, url, atype in remaining:
+        new_cat = key_map.get(cache_key(extract_domain(url or ""), app), "其他/待分类")
+        if not new_cat.startswith("其他"):
+            api_updates.append((new_cat, rid))
+
+    if api_updates:
+        conn.executemany("UPDATE activity_log SET category = ? WHERE id = ?", api_updates)
+        conn.commit()
+        print(f"  API 重分类更新: {len(api_updates)} 条")
+    else:
+        print("  API 重分类：无变化")
+
+    return len(hard_updates) + len(api_updates)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="小蛋活动分类器（Claude Haiku 4.5）")
     parser.add_argument("--date", help="只处理指定日期 YYYY-MM-DD")
@@ -512,6 +639,10 @@ def main() -> None:
     parser.add_argument(
         "--no-api", action="store_true",
         help="跳过 API 调用，只使用硬编码规则和 domain_categories 缓存",
+    )
+    parser.add_argument(
+        "--recheck-other", action="store_true",
+        help="重新检查今天（或 --date 指定日期）category LIKE '其他%%' 的记录，尝试重新分类",
     )
     args = parser.parse_args()
 
@@ -527,6 +658,12 @@ def main() -> None:
             client = anthropic.Anthropic(api_key=api_key)
         else:
             print("[提示] 未设置 ANTHROPIC_API_KEY，将只使用硬编码规则和缓存（等同于 --no-api）。")
+
+    if args.recheck_other:
+        recheck_other_category(conn, client, date_str=args.date)
+        print_distribution(conn)
+        conn.close()
+        return
 
     if args.import_safari:
         import_safari_history(conn, client, since_date=args.date)

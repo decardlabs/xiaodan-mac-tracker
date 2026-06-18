@@ -1,3 +1,6 @@
 #!/bin/bash
-cd "/Users/fercopsun/Documents/code1/桌面监控程序"
-exec /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 -u tracker.py
+cd "$(dirname "$0")"
+LOG_DIR="$HOME/Library/Logs/XiaoDan"
+mkdir -p "$LOG_DIR"
+exec "$(python3 -c 'import sys; print(sys.executable)')" -u tracker.py \
+  >> "$LOG_DIR/tracker.log" 2>&1
