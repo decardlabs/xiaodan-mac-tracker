@@ -22,7 +22,8 @@ except ImportError:
 
 from analyzer import (
     get_all_weeks, get_all_months,
-    get_week_stats, get_month_stats,
+    get_week_stats, get_month_stats, get_month_daily_stats,
+    get_month_daily_period_stats,
     get_reflection, save_reflection,
     get_book_notes, save_book_note,
     update_book_note, delete_book_note,
@@ -907,6 +908,68 @@ function doSave(){{
   }});
 }})();</script>"""
 
+        # ── 时段热力图（3行×每天列，横向） ────────────────────────────────────
+        import calendar as _cal
+        period_stats = get_month_daily_period_stats(year, month)
+        _, last_day  = _cal.monthrange(year, month)
+        _PERIODS     = ["早", "午", "晚"]
+        _P_COLORS    = ["#F1EFE8", "#EDF1FC", "#D6E2F8", "#B0C8F2", "#84A8EB", "#5B8DEF"]
+        _WD_CN       = ["一", "二", "三", "四", "五", "六", "日"]
+
+        _all_secs = [period_stats[f"{year}-{month:02d}-{d:02d}"][p]
+                     for d in range(1, last_day + 1) for p in _PERIODS]
+        _max_secs = max(_all_secs) if any(s > 0 for s in _all_secs) else 1
+        _step     = _max_secs / 5
+
+        def _period_color(secs):
+            if secs <= 0:          return _P_COLORS[0]
+            if secs <= _step:      return _P_COLORS[1]
+            if secs <= 2 * _step:  return _P_COLORS[2]
+            if secs <= 3 * _step:  return _P_COLORS[3]
+            if secs <= 4 * _step:  return _P_COLORS[4]
+            return _P_COLORS[5]
+
+        # 日期标题行
+        html += '<div style="margin:36px 0 0;">'
+        html += '<div style="font-size:11px;color:#8E8E93;margin-bottom:8px;">学习热力图（学校 + 自主）</div>'
+
+        # 顶部日期数字行（与格子列对齐）
+        html += '<div style="display:flex;align-items:center;margin-bottom:3px;padding-left:26px;gap:2px;">'
+        for d in range(1, last_day + 1):
+            wd = _date(year, month, d).weekday()
+            clr = "#9B72CF" if wd >= 5 else "#C0C0C5"
+            html += (f'<div style="width:15px;text-align:center;font-size:8px;'
+                     f'color:{clr};line-height:12px;">{d}</div>')
+        html += '</div>'
+
+        # 3个时段行
+        for p in _PERIODS:
+            html += '<div style="display:flex;align-items:center;gap:2px;margin-bottom:2px;">'
+            html += (f'<div style="width:22px;text-align:right;font-size:10px;font-weight:500;'
+                     f'color:#555;margin-right:4px;line-height:16px;">{p}</div>')
+            for d in range(1, last_day + 1):
+                d_str = f"{year}-{month:02d}-{d:02d}"
+                secs  = period_stats[d_str][p]
+                color = _period_color(secs)
+                wd    = _date(year, month, d).weekday()
+                dur   = fmt_duration(secs) if secs > 0 else "无记录"
+                tip   = f"{month}月{d}日（周{_WD_CN[wd]}）{p} · {dur}"
+                html += (f'<div style="width:15px;height:16px;border-radius:3px;'
+                         f'background:{color};" data-htip="{tip}"></div>')
+            html += '</div>'
+
+        html += """<script>(function(){
+  var tip=document.createElement('div');
+  tip.style.cssText='position:fixed;background:rgba(28,28,30,.85);color:#fff;padding:4px 9px;border-radius:6px;font-size:11px;pointer-events:none;display:none;z-index:9999;white-space:nowrap;';
+  document.body.appendChild(tip);
+  document.querySelectorAll('[data-htip]').forEach(function(el){
+    el.addEventListener('mouseenter',function(e){tip.textContent=el.dataset.htip;tip.style.display='block';tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY-32)+'px';});
+    el.addEventListener('mousemove',function(e){tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY-32)+'px';});
+    el.addEventListener('mouseleave',function(){tip.style.display='none';});
+  });
+})();</script>"""
+        html += '</div>'
+
         reflection = (get_monthly_reflection(year, month) or "").replace("&", "&amp;").replace("<", "&lt;").replace('"', "&quot;")
         html += (f'<div style="border-top:.5px solid #E0E0E0;padding-top:14px;margin-top:16px;">'
                  f'<div style="font-size:12px;color:#8E8E93;margin-bottom:6px;">本月 reflection</div>'
@@ -925,73 +988,85 @@ function doSave(){{
 
         html = self._build_month_header(year, month, "ranking")
 
-        # ── 环形图 ────────────────────────────────────────────────────────────
-        pie_labels, pie_data, pie_colors = [], [], []
-        for cat in CATEGORIES:
-            secs = by_category.get(cat, {}).get("seconds", 0)
-            if secs <= 0:
-                continue
-            pie_labels.append(cat)
-            pie_data.append(round(secs / 60))
-            pie_colors.append(COLORS[cat])
+        # ── 每日折线图 ────────────────────────────────────────────────────────
+        daily_stats = get_month_daily_stats(year, month)
+        _nm_first = _date(year + (1 if month == 12 else 0), month % 12 + 1, 1)
+        last_day  = (_nm_first - _timedelta(days=1)).day
+        day_labels = [str(d + 1) for d in range(last_day)]
 
-        if pie_data:
-            pie_json = json.dumps({
-                "labels": pie_labels,
-                "datasets": [{"data": pie_data, "backgroundColor": pie_colors, "borderWidth": 0}],
-            }, ensure_ascii=False)
-            html += f"""<div style="width:580px;margin:0 auto 24px;padding:16px 0;display:flex;justify-content:center;">
-<canvas id="rankingPieChart" width="420" height="420"
-  style="display:block;width:420px;height:420px;"></canvas>
-</div>
-<script>(function(){{
-  function fmtMin(m){{var h=Math.floor(m/60),mn=Math.round(m%60);if(h>0&&mn>0)return h+'h '+mn+'m';if(h>0)return h+'h';return mn+'m';}}
-  var outsideLabels={{
-    id:'outsideLabels',
-    afterDraw:function(chart){{
-      var ctx=chart.ctx;
-      var cx=chart.chartArea.left+chart.chartArea.width/2;
-      var cy=chart.chartArea.top+chart.chartArea.height/2;
-      var r=Math.min(chart.chartArea.width,chart.chartArea.height)/2;
-      chart.data.datasets[0].data.forEach(function(val,i){{
-        if(!val)return;
-        var meta=chart.getDatasetMeta(0);
-        var arc=meta.data[i];
-        var angle=(arc.startAngle+arc.endAngle)/2;
-        var isRight=Math.cos(angle)>=0;
-        var x1=cx+r*1.0*Math.cos(angle);
-        var y1=cy+r*1.0*Math.sin(angle);
-        var x2=cx+r*1.15*Math.cos(angle);
-        var y2=cy+r*1.15*Math.sin(angle);
-        var x3=x2+(isRight?30:-30);
-        ctx.beginPath();
-        ctx.moveTo(x1,y1);
-        ctx.lineTo(x2,y2);
-        ctx.lineTo(x3,y2);
-        ctx.strokeStyle='#B0B0B0';
-        ctx.lineWidth=1;
-        ctx.stroke();
-        var label=chart.data.labels[i];
-        var duration=fmtMin(val);
-        ctx.textAlign=isRight?'left':'right';
-        ctx.textBaseline='middle';
-        ctx.fillStyle='#1C1C1E';
-        ctx.font='600 12px -apple-system,BlinkMacSystemFont,sans-serif';
-        ctx.fillText(label,x3+(isRight?4:-4),y2-6);
-        ctx.font='10px -apple-system,BlinkMacSystemFont,sans-serif';
-        ctx.fillStyle='#8e8e93';
-        ctx.fillText(duration,x3+(isRight?4:-4),y2+8);
-      }});
+        cat_line_colors = {
+            "学校学习": "#5B8DEF",
+            "自主学习": "#9B72CF",
+            "娱乐":     "#4ECDC4",
+            "其他":     "#B8BCC8",
+        }
+        line_datasets = []
+        for cat in CATEGORIES:
+            data = []
+            for d in range(last_day):
+                d_str = f"{year}-{month:02d}-{d + 1:02d}"
+                data.append(round(daily_stats.get(d_str, {}).get(cat, 0) / 60, 1))
+            line_datasets.append({
+                "label": cat,
+                "data": data,
+                "borderColor": cat_line_colors[cat],
+                "backgroundColor": cat_line_colors[cat] + "33",
+                "borderWidth": 2,
+                "pointRadius": 0,
+                "pointHoverRadius": 5,
+                "pointHitRadius": 10,
+                "tension": 0.4,
+                "fill": False,
+                "hidden": cat != "自主学习",
+            })
+        # 动态 Y 轴上限：当月最大值向上取整到下一小时，再加 1h
+        all_pts = [v for ds in line_datasets for v in ds["data"]]
+        max_min = max(all_pts) if all_pts else 0
+        suggested_max = (int(max_min // 60) + 2) * 60  # 单位：分钟
+
+        line_json   = json.dumps({"labels": day_labels, "datasets": line_datasets}, ensure_ascii=False)
+        colors_json = json.dumps([cat_line_colors[cat] for cat in CATEGORIES])
+
+        # 右侧竖排按钮
+        btn_col = '<div style="display:flex;flex-direction:column;gap:6px;padding-top:4px;flex-shrink:0;">'
+        for i, cat in enumerate(CATEGORIES):
+            color  = cat_line_colors[cat]
+            active = f"background:{color};color:#fff;" if cat == "自主学习" else "background:#F0F0F0;color:#1C1C1E;"
+            btn_col += (f'<button id="linebtn{i}" onclick="toggleRankingLine({i})" '
+                        f'style="padding:5px 10px;border:none;border-radius:12px;'
+                        f'font-size:11px;cursor:pointer;width:68px;{active}">{cat}</button>')
+        btn_col += '</div>'
+
+        html += (f'<div style="display:flex;align-items:flex-start;gap:12px;">'
+                 f'<div class="chart-wrap" style="flex:1;min-width:0;">'
+                 f'<canvas id="rankingLineChart" height="140"></canvas></div>'
+                 f'{btn_col}</div>')
+
+        html += f"""<script>(function(){{
+  if(window._rankingLine)window._rankingLine.destroy();
+  window._rankingLine=new Chart(document.getElementById('rankingLineChart').getContext('2d'),{{
+    type:'line',data:{line_json},
+    options:{{responsive:true,interaction:{{mode:'index',intersect:false}},
+      plugins:{{legend:{{display:false}},
+        tooltip:{{callbacks:{{label:function(c){{
+          var m=c.parsed.y,h=Math.floor(m/60),mn=Math.round(m%60);
+          return c.dataset.label+': '+(h>0?h+'h '+mn+'m':mn+'m');
+        }}}}}}}},
+      scales:{{
+        x:{{grid:{{display:false}},ticks:{{maxRotation:0,font:{{size:10}},maxTicksLimit:10}}}},
+        y:{{suggestedMax:{suggested_max},ticks:{{callback:function(v){{return v>=60?Math.floor(v/60)+'h':v+'m';}},font:{{size:10}}}},grid:{{color:'#F0F0F0'}}}}
+      }}
     }}
-  }};
-  if(window._rankingPie)window._rankingPie.destroy();
-  window._rankingPie=new Chart(document.getElementById('rankingPieChart').getContext('2d'),{{
-    type:'doughnut',data:{pie_json},
-    options:{{responsive:false,cutout:'60%',layout:{{padding:{{top:50,bottom:50,left:110,right:110}}}},plugins:{{legend:{{display:false}},
-      tooltip:{{callbacks:{{label:function(ctx){{return fmtMin(ctx.parsed);}}}}}}}}
-    }},
-    plugins:[outsideLabels]
   }});
+  var _lc={colors_json};
+  window.toggleRankingLine=function(idx){{
+    var ds=window._rankingLine.data.datasets[idx];
+    ds.hidden=!ds.hidden;
+    var btn=document.getElementById('linebtn'+idx);
+    if(ds.hidden){{btn.style.background='#F0F0F0';btn.style.color='#1C1C1E';}}
+    else{{btn.style.background=_lc[idx];btn.style.color='#fff';}}
+    window._rankingLine.update();
+  }};
 }})();</script>
 <hr style="border:none;border-top:0.5px solid #E0E0E0;margin:0 0 20px;">"""
 

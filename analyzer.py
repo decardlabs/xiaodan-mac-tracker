@@ -403,6 +403,116 @@ def get_month_stats(year: int, month: int) -> dict:
     }
 
 
+def get_month_daily_stats(year: int, month: int) -> dict:
+    """返回当月每一天各一级分类总时长（秒）。
+
+    格式：{"2026-06-01": {"自主学习": 3600, "学校学习": 1200, ...}, ...}
+    无数据的天仍包含在返回字典中，值为空 dict。
+    """
+    _, last_day = calendar.monthrange(year, month)
+    date_list = [str(date(year, month, 1) + timedelta(days=i)) for i in range(last_day)]
+
+    conn = _get_conn()
+    try:
+        rows = _lead_query(conn, date_list)
+    finally:
+        conn.close()
+
+    result: dict = {d: {} for d in date_list}
+    for row_date, app_name, _wt, _url, category, secs in rows:
+        if secs is None or secs <= 0 or secs > _SLEEP_DETECT_THRESHOLD:
+            continue
+        if (app_name or "") in _FILTER_APPS:
+            continue
+        l1, _ = parse_category(category)
+        if row_date in result:
+            result[row_date][l1] = result[row_date].get(l1, 0.0) + secs
+
+    for day_data in result.values():
+        for k in list(day_data.keys()):
+            day_data[k] = int(day_data[k])
+
+    return result
+
+
+def get_month_daily_period_stats(year: int, month: int) -> dict:
+    """返回当月每天每个时段的学习时长（学校学习+自主学习，单位秒）。
+
+    格式：{"2026-06-01": {"早": 1200, "午": 3600, "晚": 0}, ...}
+    时段划分（本地时间）：
+      早 = 06:00–12:00  午 = 12:00–18:00  晚 = 18:00–24:00
+      凌晨 00:00–06:00 归入前一天的"晚"
+    """
+    _, last_day = calendar.monthrange(year, month)
+    date_list = [str(date(year, month, 1) + timedelta(days=i)) for i in range(last_day)]
+
+    # 多取下月第1天，捕获月末凌晨的溢出记录
+    next_year  = year + 1 if month == 12 else year
+    next_month = 1        if month == 12 else month + 1
+    extra_date = str(date(next_year, next_month, 1))
+    query_dates = date_list + [extra_date]
+
+    conn = _get_conn()
+    placeholders = ",".join(["?"] * len(query_dates))
+    rows = conn.execute(f"""
+        WITH with_next AS (
+            SELECT
+                date,
+                app_name,
+                category,
+                timestamp AS start_ts,
+                LEAD(timestamp) OVER (PARTITION BY date ORDER BY timestamp) AS next_ts
+            FROM activity_log
+            WHERE date IN ({placeholders})
+              AND activity_type NOT IN ('idle', 'dock')
+        )
+        SELECT
+            date,
+            app_name,
+            category,
+            start_ts,
+            (julianday(next_ts) - julianday(start_ts)) * 86400.0 AS secs
+        FROM with_next
+        WHERE next_ts IS NOT NULL
+    """, query_dates).fetchall()
+    conn.close()
+
+    result: dict = {d: {"早": 0, "午": 0, "晚": 0} for d in date_list}
+
+    for row_date, app_name, category, start_ts, secs in rows:
+        if secs is None or secs <= 0 or secs > _SLEEP_DETECT_THRESHOLD:
+            continue
+        if (app_name or "") in _FILTER_APPS:
+            continue
+        l1, _ = parse_category(category)
+        if l1 not in ("学校学习", "自主学习"):
+            continue
+
+        try:
+            hour = int(start_ts[11:13])
+        except (IndexError, ValueError):
+            continue
+
+        if hour < 6:
+            # 凌晨 → 归入前一天"晚"
+            d = str(date.fromisoformat(row_date) - timedelta(days=1))
+            period = "晚"
+        elif hour < 12:
+            d = row_date
+            period = "早"
+        elif hour < 18:
+            d = row_date
+            period = "午"
+        else:
+            d = row_date
+            period = "晚"
+
+        if d in result:
+            result[d][period] += int(secs)
+
+    return result
+
+
 def get_all_months() -> list:
     """返回有数据的所有月份，倒序，格式 (year, month)。"""
     conn = _get_conn()
