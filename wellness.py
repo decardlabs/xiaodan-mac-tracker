@@ -1,8 +1,15 @@
 import json
 import random
 import os
+import sys
 
-_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wellness_activities.json")
+if getattr(sys, "frozen", False):
+    # py2app 打包环境：RESOURCEPATH 环境变量直接指向 Contents/Resources/
+    _base = os.environ["RESOURCEPATH"]
+else:
+    _base = os.path.dirname(os.path.abspath(__file__))
+
+_DATA_PATH = os.path.join(_base, "wellness_activities.json")
 
 _cache: dict | None = None
 

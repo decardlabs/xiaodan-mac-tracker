@@ -88,6 +88,14 @@ def _week_next(year: int, week: int) -> tuple[int, int]:
     return y, w
 
 
+def _month_prev(year: int, month: int) -> tuple[int, int]:
+    return (year - 1, 12) if month == 1 else (year, month - 1)
+
+
+def _month_next(year: int, month: int) -> tuple[int, int]:
+    return (year + 1, 1) if month == 12 else (year, month + 1)
+
+
 # ── ReportWindow ─────────────────────────────────────────────────────────────
 
 class ReportWindow(NSObject):
@@ -174,9 +182,7 @@ class ReportWindow(NSObject):
         self._current_key  = (year, month)
         self._current_sub  = sub
         sidebar = self._build_sidebar("month", year, month)
-        if sub == "pages":
-            content = self._build_top_pages_content(year, month)
-        elif sub == "ranking":
+        if sub == "ranking":
             content = self._build_ranking_content(year, month)
         else:
             content = self._build_month_content(year, month)
@@ -439,6 +445,37 @@ function saveMonthlyReflection(year,month,content){{
 
         return nav + tabs
 
+    @objc.python_method
+    def _build_month_header(self, year: int, month: int, sub) -> str:
+        today = _date.today()
+        is_current = (year == today.year and month == today.month)
+
+        py, pm = _month_prev(year, month)
+        ny, nm = _month_next(year, month)
+
+        all_months_set = {(y, m) for y, m in get_all_months()}
+        has_prev = (py, pm) in all_months_set
+        has_next = not is_current
+
+        left  = (f'<button class="nav-arrow" onclick="navigate(\'month\',{py},{pm})">‹</button>'
+                 if has_prev else '<button class="nav-arrow" disabled>‹</button>')
+        right = (f'<button class="nav-arrow" onclick="navigate(\'month\',{ny},{nm})">›</button>'
+                 if has_next else '<button class="nav-arrow" disabled>›</button>')
+
+        nav = (f'<div class="week-nav">{left}'
+               f'<span class="nav-date">{year}年{month}月</span>'
+               f'{right}</div>')
+
+        tabs = '<div class="week-tabs">'
+        for tab_sub, label in [("", "总览"), ("ranking", "时间排行")]:
+            is_act = (sub is None and tab_sub == "") or (tab_sub != "" and sub == tab_sub)
+            cls = " active" if is_act else ""
+            tabs += (f'<span class="tab{cls}" '
+                     f'onclick="navigateSub(\'{tab_sub}\',{year},{month})">{label}</span>')
+        tabs += '</div>'
+
+        return nav + tabs
+
     # ── 周报内容 ──────────────────────────────────────────────────────────────
 
     @objc.python_method
@@ -557,9 +594,9 @@ function saveMonthlyReflection(year,month,content){{
                 "labels": pie_labels,
                 "datasets": [{"data": pie_data, "backgroundColor": pie_colors, "borderWidth": 0}],
             }, ensure_ascii=False)
-            html += f"""<div style="width:320px;margin:0 auto 24px;padding:16px 70px;">
-<canvas id="detailPieChart" width="150" height="150"
-  style="display:block;margin:0 auto;"></canvas>
+            html += f"""<div style="width:580px;margin:0 auto 24px;padding:16px 0;display:flex;justify-content:center;">
+<canvas id="detailPieChart" width="420" height="420"
+  style="display:block;width:420px;height:420px;"></canvas>
 </div>
 <script>(function(){{
   function fmtMin(m){{var h=Math.floor(m/60),mn=Math.round(m%60);if(h>0&&mn>0)return h+'h '+mn+'m';if(h>0)return h+'h';return mn+'m';}}
@@ -576,32 +613,35 @@ function saveMonthlyReflection(year,month,content){{
         var arc=meta.data[i];
         var angle=(arc.startAngle+arc.endAngle)/2;
         var isRight=Math.cos(angle)>=0;
-        var x1=cx+r*0.9*Math.cos(angle);
-        var y1=cy+r*0.9*Math.sin(angle);
-        var x2=cx+r*1.2*Math.cos(angle);
-        var y2=cy+r*1.2*Math.sin(angle);
-        var x3=x2+(isRight?20:-20);
+        var x1=cx+r*1.0*Math.cos(angle);
+        var y1=cy+r*1.0*Math.sin(angle);
+        var x2=cx+r*1.15*Math.cos(angle);
+        var y2=cy+r*1.15*Math.sin(angle);
+        var x3=x2+(isRight?30:-30);
         ctx.beginPath();
         ctx.moveTo(x1,y1);
         ctx.lineTo(x2,y2);
         ctx.lineTo(x3,y2);
-        ctx.strokeStyle='#C8C8C8';
-        ctx.lineWidth=0.8;
+        ctx.strokeStyle='#B0B0B0';
+        ctx.lineWidth=1;
         ctx.stroke();
         var label=chart.data.labels[i];
         var duration=fmtMin(val);
-        ctx.fillStyle='#1C1C1E';
-        ctx.font='10px -apple-system,BlinkMacSystemFont,sans-serif';
         ctx.textAlign=isRight?'left':'right';
         ctx.textBaseline='middle';
-        ctx.fillText(label+' '+duration,x3+(isRight?4:-4),y2);
+        ctx.fillStyle='#1C1C1E';
+        ctx.font='600 12px -apple-system,BlinkMacSystemFont,sans-serif';
+        ctx.fillText(label,x3+(isRight?4:-4),y2-6);
+        ctx.font='10px -apple-system,BlinkMacSystemFont,sans-serif';
+        ctx.fillStyle='#8e8e93';
+        ctx.fillText(duration,x3+(isRight?4:-4),y2+8);
       }});
     }}
   }};
   if(window._detailPie)window._detailPie.destroy();
   window._detailPie=new Chart(document.getElementById('detailPieChart').getContext('2d'),{{
     type:'doughnut',data:{pie_json},
-    options:{{cutout:'60%',plugins:{{legend:{{display:false}},
+    options:{{responsive:false,cutout:'60%',layout:{{padding:{{top:50,bottom:50,left:110,right:110}}}},plugins:{{legend:{{display:false}},
       tooltip:{{callbacks:{{label:function(ctx){{return fmtMin(ctx.parsed);}}}}}}}}
     }},
     plugins:[outsideLabels]
@@ -801,7 +841,7 @@ function doSave(){{
         chg_span = (f'<span class="{chg_dir}" style="margin-left:8px;font-size:12px;">'
                     f'{chg_text}</span>') if chg_text else ""
 
-        html  = f'<div class="page-title">{year}年{month}月</div>'
+        html  = self._build_month_header(year, month, None)
         html += f'<div class="total-row" style="margin-top:0;">{fmt_duration(total)}{chg_span}</div>'
 
         html += '<div class="card-grid">'
@@ -867,13 +907,6 @@ function doSave(){{
   }});
 }})();</script>"""
 
-        html += (f'<div style="display:flex;gap:16px;margin:14px 0 0;">'
-                 f'<span style="font-size:13px;color:#8E8E93;cursor:pointer;" '
-                 f'onclick="navigateSub(\'pages\',{year},{month})">页面使用时间 →</span>'
-                 f'<span style="font-size:13px;color:#8E8E93;cursor:pointer;" '
-                 f'onclick="navigateSub(\'ranking\',{year},{month})">时间排行 →</span>'
-                 f'</div>')
-
         reflection = (get_monthly_reflection(year, month) or "").replace("&", "&amp;").replace("<", "&lt;").replace('"', "&quot;")
         html += (f'<div style="border-top:.5px solid #E0E0E0;padding-top:14px;margin-top:16px;">'
                  f'<div style="font-size:12px;color:#8E8E93;margin-bottom:6px;">本月 reflection</div>'
@@ -886,39 +919,83 @@ function doSave(){{
         return html
 
     @objc.python_method
-    def _build_top_pages_content(self, year: int, month: int) -> str:
-        stats     = get_month_stats(year, month)
-        top_pages = stats.get("top_pages", [])
-
-        def he(s):
-            return (s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-
-        html = f'<div class="page-title">{month}月 · 页面使用 Top 10</div><div style="margin-top:14px;">'
-
-        if not top_pages:
-            return html + '<div style="font-size:13px;color:#8E8E93;text-align:center;padding:20px 0;">暂无数据</div></div>'
-
-        max_secs = top_pages[0]["seconds"] or 1
-        for i, page in enumerate(top_pages):
-            title = he(page.get("title") or page.get("url") or "")
-            url   = he(page.get("url") or "")
-            app   = he(page.get("app") or "")
-            secs  = page.get("seconds", 0)
-            pct   = int(secs / max_secs * 100)
-            html += (f'<div class="page-row">'
-                     f'<div class="page-idx">{i+1}</div>'
-                     f'<div class="page-info">'
-                     f'<div class="page-title-t">{title or url}</div>'
-                     f'<div class="page-url-t">{app} · {url}</div>'
-                     f'<div class="prog-bg"><div class="prog-fill" style="width:{pct}%;background:#B8BCC8;"></div></div>'
-                     f'</div><div class="page-dur">{fmt_duration(secs)}</div></div>')
-        return html + '</div>'
-
-    @objc.python_method
     def _build_ranking_content(self, year: int, month: int) -> str:
         stats       = get_month_stats(year, month)
         by_category = stats.get("by_category", {})
 
+        html = self._build_month_header(year, month, "ranking")
+
+        # ── 环形图 ────────────────────────────────────────────────────────────
+        pie_labels, pie_data, pie_colors = [], [], []
+        for cat in CATEGORIES:
+            secs = by_category.get(cat, {}).get("seconds", 0)
+            if secs <= 0:
+                continue
+            pie_labels.append(cat)
+            pie_data.append(round(secs / 60))
+            pie_colors.append(COLORS[cat])
+
+        if pie_data:
+            pie_json = json.dumps({
+                "labels": pie_labels,
+                "datasets": [{"data": pie_data, "backgroundColor": pie_colors, "borderWidth": 0}],
+            }, ensure_ascii=False)
+            html += f"""<div style="width:580px;margin:0 auto 24px;padding:16px 0;display:flex;justify-content:center;">
+<canvas id="rankingPieChart" width="420" height="420"
+  style="display:block;width:420px;height:420px;"></canvas>
+</div>
+<script>(function(){{
+  function fmtMin(m){{var h=Math.floor(m/60),mn=Math.round(m%60);if(h>0&&mn>0)return h+'h '+mn+'m';if(h>0)return h+'h';return mn+'m';}}
+  var outsideLabels={{
+    id:'outsideLabels',
+    afterDraw:function(chart){{
+      var ctx=chart.ctx;
+      var cx=chart.chartArea.left+chart.chartArea.width/2;
+      var cy=chart.chartArea.top+chart.chartArea.height/2;
+      var r=Math.min(chart.chartArea.width,chart.chartArea.height)/2;
+      chart.data.datasets[0].data.forEach(function(val,i){{
+        if(!val)return;
+        var meta=chart.getDatasetMeta(0);
+        var arc=meta.data[i];
+        var angle=(arc.startAngle+arc.endAngle)/2;
+        var isRight=Math.cos(angle)>=0;
+        var x1=cx+r*1.0*Math.cos(angle);
+        var y1=cy+r*1.0*Math.sin(angle);
+        var x2=cx+r*1.15*Math.cos(angle);
+        var y2=cy+r*1.15*Math.sin(angle);
+        var x3=x2+(isRight?30:-30);
+        ctx.beginPath();
+        ctx.moveTo(x1,y1);
+        ctx.lineTo(x2,y2);
+        ctx.lineTo(x3,y2);
+        ctx.strokeStyle='#B0B0B0';
+        ctx.lineWidth=1;
+        ctx.stroke();
+        var label=chart.data.labels[i];
+        var duration=fmtMin(val);
+        ctx.textAlign=isRight?'left':'right';
+        ctx.textBaseline='middle';
+        ctx.fillStyle='#1C1C1E';
+        ctx.font='600 12px -apple-system,BlinkMacSystemFont,sans-serif';
+        ctx.fillText(label,x3+(isRight?4:-4),y2-6);
+        ctx.font='10px -apple-system,BlinkMacSystemFont,sans-serif';
+        ctx.fillStyle='#8e8e93';
+        ctx.fillText(duration,x3+(isRight?4:-4),y2+8);
+      }});
+    }}
+  }};
+  if(window._rankingPie)window._rankingPie.destroy();
+  window._rankingPie=new Chart(document.getElementById('rankingPieChart').getContext('2d'),{{
+    type:'doughnut',data:{pie_json},
+    options:{{responsive:false,cutout:'60%',layout:{{padding:{{top:50,bottom:50,left:110,right:110}}}},plugins:{{legend:{{display:false}},
+      tooltip:{{callbacks:{{label:function(ctx){{return fmtMin(ctx.parsed);}}}}}}}}
+    }},
+    plugins:[outsideLabels]
+  }});
+}})();</script>
+<hr style="border:none;border-top:0.5px solid #E0E0E0;margin:0 0 20px;">"""
+
+        # ── 二级分类进度条列表 ─────────────────────────────────────────────────
         items = []
         for l1, cat_data in by_category.items():
             for l2, secs in cat_data.get("sub", {}).items():
@@ -927,7 +1004,6 @@ function doSave(){{
         items.sort(key=lambda x: -x[2])
         items = items[:15]
 
-        html = f'<div class="page-title">{year}年{month}月 · 时间排行</div>'
         if not items:
             return (html + '<div style="font-size:13px;color:#8E8E93;text-align:center;'
                     'padding:30px 0;">暂无数据</div>')
@@ -1074,11 +1150,6 @@ function doSave(){{
             if note_id:
                 delete_book_note(note_id)
                 self._render_booknotes_history(toast="已删除")
-
-        elif action == "navigate_month_pages":
-            y, m = _int("year"), _int("month")
-            if y and m:
-                self._render_month(y, m, sub="pages")
 
         elif action == "save_monthly_reflection":
             y, m, content = _int("year"), _int("month"), _str("content")

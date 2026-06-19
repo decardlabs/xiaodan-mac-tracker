@@ -143,3 +143,57 @@
 ### 下一步
 - 打包成 .app / .dmg 发布
 - 数据导出功能（CSV / JSON）
+
+---
+
+## 2026年6月19日 — v0.7
+
+### 新增功能
+
+**读书笔记增强（v0.61 → v0.62 补丁）**
+- 修复读书笔记删除按钮无反应的 bug（objc 方法未正确注册）
+- 确认弹窗从原生 `NSAlert` 改为自定义 JS 内联样式弹窗（`xdConfirm`），
+  解决原生弹窗在 WKWebView 里样式异常的问题
+
+**月报重构**
+- 删除"页面使用时间"功能（`_build_top_pages_content` 整函数移除）
+- 月报从"底部链接跳转"改为标签栏结构，复用周报的 `.week-tabs` / `.tab` CSS
+  - 标签："总览" / "时间排行"，点击切换，不再全页替换
+- 新增 `_build_month_header`：含月份导航箭头（‹/›）+ 标签栏
+- 新增 `_month_prev` / `_month_next` 模块级辅助函数
+- "时间排行"页顶部加入环形图（doughnut，420×420，cutout 60%，outsideLabels 外部标签），
+  展示当月各一级分类占比，与周报"时间明细"视觉一致
+
+**新 Logo 与图标打包**
+- 设计并生成 `xiaodan_icon.icns`，覆盖10种尺寸（16×16 至 512×512@2x）
+- 使用 `iconutil` 从 PNG iconset 打包为 .icns，Quick Look 验证通过
+
+**py2app 打包配置**
+- 新增 `setup.py`，配置 py2app 打包参数：
+  - `iconfile: xiaodan_icon.icns`，Info.plist 中 `CFBundleIconFile`、`LSUIElement: True`
+  - `excludes: ['tkinter']`：排除 Tk/Tcl 框架，解决打包时 ad-hoc 签名因 `libtkstub.a` 失败的问题
+- 修复 `wellness.py` 资源路径：
+  - 打包后 `wellness.py` 在 `Contents/Resources/lib/python3.14/`，而 JSON 在 `Contents/Resources/`
+  - 改用 `os.environ["RESOURCEPATH"]`（py2app 启动时注入）定位资源根目录，开发环境退回 `__file__` 相对路径
+
+### 问题与解决
+
+- py2app 签名失败（`RuntimeError: Cannot sign bundle`）→ `excludes: ['tkinter']` 排除无法签名的 Tk 静态库
+- wellness JSON 路径在打包后失效 → 改用 `RESOURCEPATH` 环境变量，实测验证路径正确
+- LaunchAgent `KeepAlive: true` 导致 tracker 无法临时停止测试 → 移走 plist 再测，测后还原
+
+### 当前状态
+
+- tracker 后台记录 ✅
+- classifier 自动分类 + 完成通知 ✅
+- 菜单栏 UI（图表 + 目标 + 健康提醒 + 日报）✅
+- 周报/月报（标签栏导航，环形图 + 进度条列表）✅
+- 读书笔记 CRUD ✅
+- 新 Logo 图标 ✅
+- py2app 打包配置 ✅（本机可运行，ad-hoc 签名，不可分发）
+
+### 下一步
+
+- Apple Developer 证书正式签名，支持分发
+- 数据导出功能（CSV / JSON）
+- 月报 reflection 存储迁移（当前写 monthly_summaries 表，可考虑统一）

@@ -783,7 +783,11 @@ class XiaoDanDelegate(NSObject):
 
     def checkReport_(self, timer):
         today_str = str(date.today())
-        if datetime.now().hour >= self._report_time[0] and get_report(today_str) is None:
+        now = datetime.now()
+        target_h, target_m = self._report_time
+        time_reached = (now.hour > target_h) or \
+                       (now.hour == target_h and now.minute >= target_m)
+        if time_reached and get_report(today_str) is None:
             if self._generating_report:
                 return
             self._generating_report = True

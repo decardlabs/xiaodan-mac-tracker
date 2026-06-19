@@ -4,6 +4,7 @@
 
 # 数据库和日志（本地运行数据，不上传）
 activity.db
+*.db
 tracker.log
 tracker_error.log
 classifier_error.log
@@ -19,3 +20,19 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+
+# 备份和临时文件
+backups/
+*.bak
+tracker.py.bak
+
+# py2app 打包产物（体积大，不入库）
+build/
+dist/
+
+# 图标临时目录
+xiaodan_icon/
+xiaodan_icon.iconset/
+
+# 本地第三方库副本
+chart.umd.min.js
