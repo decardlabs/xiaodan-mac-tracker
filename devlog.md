@@ -146,6 +146,47 @@
 
 ---
 
+## 2026年6月19日 — v0.73
+
+### 新增功能
+
+**起身提醒（standup_reminder.py）**
+- 新建 `standup_reminder.py`，`StandupTimer` 类 + 模块级单例 `timer`
+  - `configure(enabled, interval_minutes)`：由 UI 层调用，设置开关和间隔
+  - `add_active_seconds(seconds, activity_type)`：由 tracker 每5秒调用，`idle`/`dock` 类型自动跳过
+  - 累计活跃时长达到间隔后重置计数，跨线程调 `performSelectorOnMainThread_` → `showStandupAlert:`
+- `ui.py` 新增 `showStandupAlert_` ObjC 方法：弹出 NSAlert，显示「起来走动一下吧 / 你已经连续使用电脑 N 分钟了」，单按钮「好」
+- `tracker.py` 在每次有效活动帧 `save_to_db` 后调用 `timer.add_active_seconds(POLL_INTERVAL, main["type"])`
+
+**设置持久化（settings.py）**
+- 新建 `settings.py`：`load_settings()` / `save_settings()`，JSON 存储到 `~/Library/Application Support/XiaoDan/settings.json`
+- 持久化字段：`chart_mode`、`wellness_enabled`、`report_time`、`standup_reminder_enabled`、`standup_interval_minutes`
+- 启动时自动从 JSON 加载，任意设置变更后立即写盘
+
+**设置菜单新增两行（ui.py）**
+- "显示"分组末尾新增：
+  - 起身提醒 — NSButton checkbox（`toggleStandup:`）
+  - 提醒间隔 — NSTextField 数字输入框 + "分钟"标签，范围 5–180，tag=2 区分 `controlTextDidEndEditing_`
+
+### 当前状态
+
+- tracker 后台记录 ✅
+- classifier 自动分类 + 完成通知 ✅
+- 菜单栏 UI（图表 + 目标 + 健康提醒 + 日报）✅
+- 周报/月报（标签栏导航）✅
+  - 月报总览：按周柱状图 + 分类卡片 + 时段热力图 + 月感想
+  - 月报时间排行：平滑折线图（右侧按钮切换）+ 二级分类进度条 + AI 月报卡片
+- 读书笔记 CRUD ✅
+- 设置持久化 ✅
+- 起身提醒（NSAlert 主线程弹窗）✅
+
+### 下一步
+
+- Apple Developer 证书正式签名，支持分发
+- 数据导出功能（CSV / JSON）
+
+---
+
 ## 2026年6月19日 — v0.71
 
 ### 新增功能

@@ -129,6 +129,11 @@ state = SharedState()
 CLASSIFIER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "classifier.py")
 _classifier_running = False
 
+try:
+    import standup_reminder as _standup_reminder
+except ImportError:
+    _standup_reminder = None
+
 
 # ── AppleScript 辅助 ──────────────────────────────────────────────────────────
 def run_applescript(script: str, timeout: int = 4) -> str | None:
@@ -804,6 +809,8 @@ def tracking_loop(conn: sqlite3.Connection) -> None:
 
             db_title = main.get("page_title") or window_title
             save_to_db(conn, timestamp_db, date_db, app_name, db_title, main, bg)
+            if _standup_reminder is not None:
+                _standup_reminder.timer.add_active_seconds(POLL_INTERVAL, main["type"])
             record_counter += 1
             if record_counter >= 60:
                 record_counter = 0

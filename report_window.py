@@ -1028,20 +1028,22 @@ function doSave(){{
         line_json   = json.dumps({"labels": day_labels, "datasets": line_datasets}, ensure_ascii=False)
         colors_json = json.dumps([cat_line_colors[cat] for cat in CATEGORIES])
 
-        # 右侧竖排按钮
-        btn_col = '<div style="display:flex;flex-direction:column;gap:6px;padding-top:4px;flex-shrink:0;">'
+        # 图表上方右对齐横向按钮行
+        btn_row = '<div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:8px;">'
         for i, cat in enumerate(CATEGORIES):
-            color  = cat_line_colors[cat]
-            active = f"background:{color};color:#fff;" if cat == "自主学习" else "background:#F0F0F0;color:#1C1C1E;"
-            btn_col += (f'<button id="linebtn{i}" onclick="toggleRankingLine({i})" '
-                        f'style="padding:5px 10px;border:none;border-radius:12px;'
-                        f'font-size:11px;cursor:pointer;width:68px;{active}">{cat}</button>')
-        btn_col += '</div>'
+            color = cat_line_colors[cat]
+            if cat == "自主学习":
+                btn_style = f"background:#fff;border:2px solid {color};color:#1C1C1E;"
+            else:
+                btn_style = "background:#fff;border:2px solid #E0DEDA;color:#8E8E93;"
+            btn_row += (f'<button id="linebtn{i}" onclick="toggleRankingLine({i})" '
+                        f'style="padding:5px 10px;border-radius:99px;'
+                        f'font-size:11px;cursor:pointer;{btn_style}">{cat}</button>')
+        btn_row += '</div>'
 
-        html += (f'<div style="display:flex;align-items:flex-start;gap:12px;">'
-                 f'<div class="chart-wrap" style="flex:1;min-width:0;">'
-                 f'<canvas id="rankingLineChart" height="140"></canvas></div>'
-                 f'{btn_col}</div>')
+        html += (f'{btn_row}'
+                 f'<div class="chart-wrap">'
+                 f'<canvas id="rankingLineChart" height="140"></canvas></div>')
 
         html += f"""<script>(function(){{
   if(window._rankingLine)window._rankingLine.destroy();
@@ -1064,8 +1066,8 @@ function doSave(){{
     var ds=window._rankingLine.data.datasets[idx];
     ds.hidden=!ds.hidden;
     var btn=document.getElementById('linebtn'+idx);
-    if(ds.hidden){{btn.style.background='#F0F0F0';btn.style.color='#1C1C1E';}}
-    else{{btn.style.background=_lc[idx];btn.style.color='#fff';}}
+    if(ds.hidden){{btn.style.border='2px solid #E0DEDA';btn.style.color='#8E8E93';}}
+    else{{btn.style.border='2px solid '+_lc[idx];btn.style.color='#1C1C1E';}}
     window._rankingLine.update();
   }};
 }})();</script>
@@ -1108,22 +1110,30 @@ function doSave(){{
         # ── 月报 AI 叙事总结（进度条列表下方）────────────────────────────────
         monthly_summary = get_monthly_summary(year, month)
         if monthly_summary:
-            summary_escaped = (monthly_summary
-                               .replace("&", "&amp;")
-                               .replace("<", "&lt;")
-                               .replace('"', "&quot;"))
+            escaped = (monthly_summary
+                       .replace("&", "&amp;")
+                       .replace("<", "&lt;")
+                       .replace('"', "&quot;"))
+            paras = [p.strip() for p in escaped.split("\n\n") if p.strip()]
+            paras_html = "".join(
+                f'<div style="font-size:13px;color:#3C3C43;line-height:1.8;'
+                f'margin-bottom:{"10px" if i < len(paras) - 1 else "0"};">{p}</div>'
+                for i, p in enumerate(paras)
+            )
             html += (
-                f'<div style="margin-top:32px;">'
-                f'<div style="font-size:11px;color:#8E8E93;margin-bottom:10px;'
+                f'<div style="margin-top:32px;background:#FAFAF8;border-radius:12px;'
+                f'padding:18px 20px;box-shadow:0 1px 4px rgba(0,0,0,.08);">'
+                f'<div style="font-size:11px;color:#8E8E93;margin-bottom:12px;'
                 f'letter-spacing:.3px;">本月总结</div>'
-                f'<div style="font-size:13px;color:#1C1C1E;line-height:1.85;'
-                f'white-space:pre-wrap;">{summary_escaped}</div>'
+                f'{paras_html}'
                 f'</div>'
             )
         else:
             html += (
-                '<div style="margin-top:32px;font-size:12px;color:#C0C0C5;'
-                'text-align:center;padding:14px 0;">月底会自动生成本月总结</div>'
+                '<div style="margin-top:32px;background:#FAFAF8;border-radius:12px;'
+                'padding:18px 20px;box-shadow:0 1px 4px rgba(0,0,0,.08);'
+                'font-size:12px;color:#C0C0C5;text-align:center;">'
+                '月底会自动生成本月总结</div>'
             )
 
         return html

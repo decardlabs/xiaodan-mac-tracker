@@ -19,6 +19,7 @@ try:
         NSApplication, NSStatusBar, NSMenu, NSMenuItem,
         NSVariableStatusItemLength,
         NSWindow, NSButton, NSTextField, NSBox, NSSegmentedControl,
+        NSAlert,
     )
 except ImportError:
     raise SystemExit("缺少依赖，请运行：pip install pyobjc-framework-Cocoa")
@@ -546,17 +547,31 @@ class XiaoDanDelegate(NSObject):
         if self is not None:
             self._conn              = None    # sqlite3.Connection，由 start_ui() 注入
             self._status_item       = None
-            self._chart_mode        = "donut"
             self._view_date         = date.today()
             self._wellness_activity = None
             self._wellness_date     = None
-            self._wellness_enabled  = False
             self._menu              = None    # 当前首页 NSMenu（用于 menuWillOpen_ 对比）
-            self._report_time       = (19, 0)
             self._show_report       = False   # False=图表，True=简报
             self._generating_report  = False   # 防止日报并发生成
             self._generating_monthly = False   # 防止月报并发生成
             self._last_recheck_time  = None    # 每小时触发一次 --recheck-other
+            # 从持久化设置加载
+            self._chart_mode       = "donut"
+            self._wellness_enabled = False
+            self._report_time      = (19, 0)
+            self._standup_enabled  = False
+            self._standup_interval = 45
+            try:
+                from settings import load_settings
+                _s = load_settings()
+                self._chart_mode       = _s.get("chart_mode", "donut")
+                self._wellness_enabled = bool(_s.get("wellness_enabled", False))
+                _rt = _s.get("report_time", [19, 0])
+                self._report_time      = (int(_rt[0]), int(_rt[1]))
+                self._standup_enabled  = bool(_s.get("standup_reminder_enabled", False))
+                self._standup_interval = int(_s.get("standup_interval_minutes", 45))
+            except Exception:
+                pass
         return self
 
     # ── NSApplicationDelegate ────────────────────────────────────────────────
@@ -581,6 +596,11 @@ class XiaoDanDelegate(NSObject):
             .addObserver_selector_name_object_(
                 self, "onClassifierDone:", "XiaoDanClassifierDone", None
             )
+        try:
+            import standup_reminder
+            standup_reminder.timer.configure(self._standup_enabled, self._standup_interval)
+        except Exception:
+            pass
 
     # ── ObjC 可见方法（NSTimer 回调 & NSMenuItem actions） ──────────────────
     def refreshTitle_(self, timer):
@@ -684,6 +704,61 @@ class XiaoDanDelegate(NSObject):
         wellness_row_item.setEnabled_(False)
         menu.addItem_(wellness_row_item)
 
+        # ── 起身提醒行
+        standup_row = NSView.alloc().initWithFrame_(((0, 0), (260, 30)))
+        lbl_sd = NSTextField.alloc().initWithFrame_(((16, 6), (100, 18)))
+        lbl_sd.setStringValue_("起身提醒")
+        lbl_sd.setEditable_(False)
+        lbl_sd.setSelectable_(False)
+        lbl_sd.setBezeled_(False)
+        lbl_sd.setDrawsBackground_(False)
+        lbl_sd.setFont_(NSFont.systemFontOfSize_(13))
+        standup_row.addSubview_(lbl_sd)
+        chk_sd = NSButton.alloc().initWithFrame_(((220, 4), (22, 22)))
+        chk_sd.setButtonType_(3)
+        chk_sd.setTitle_("")
+        chk_sd.setState_(1 if self._standup_enabled else 0)
+        chk_sd.setTarget_(self)
+        chk_sd.setAction_("toggleStandup:")
+        standup_row.addSubview_(chk_sd)
+        self._settings_views.append(standup_row)
+        standup_row_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("", None, "")
+        standup_row_item.setView_(standup_row)
+        standup_row_item.setEnabled_(False)
+        menu.addItem_(standup_row_item)
+
+        # ── 提醒间隔行
+        interval_row = NSView.alloc().initWithFrame_(((0, 0), (260, 30)))
+        lbl_iv = NSTextField.alloc().initWithFrame_(((16, 6), (100, 18)))
+        lbl_iv.setStringValue_("提醒间隔")
+        lbl_iv.setEditable_(False)
+        lbl_iv.setSelectable_(False)
+        lbl_iv.setBezeled_(False)
+        lbl_iv.setDrawsBackground_(False)
+        lbl_iv.setFont_(NSFont.systemFontOfSize_(13))
+        interval_row.addSubview_(lbl_iv)
+        lbl_min = NSTextField.alloc().initWithFrame_(((224, 6), (28, 18)))
+        lbl_min.setStringValue_("分钟")
+        lbl_min.setEditable_(False)
+        lbl_min.setSelectable_(False)
+        lbl_min.setBezeled_(False)
+        lbl_min.setDrawsBackground_(False)
+        lbl_min.setFont_(NSFont.systemFontOfSize_(11))
+        lbl_min.setTextColor_(NSColor.secondaryLabelColor())
+        interval_row.addSubview_(lbl_min)
+        iv_field = NSTextField.alloc().initWithFrame_(((172, 4), (48, 22)))
+        iv_field.setStringValue_(str(self._standup_interval))
+        iv_field.setBezeled_(True)
+        iv_field.setEditable_(True)
+        iv_field.setTag_(2)
+        iv_field.setDelegate_(self)
+        interval_row.addSubview_(iv_field)
+        self._settings_views.append(interval_row)
+        interval_row_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("", None, "")
+        interval_row_item.setView_(interval_row)
+        interval_row_item.setEnabled_(False)
+        menu.addItem_(interval_row_item)
+
         menu.addItem_(NSMenuItem.separatorItem())
 
         # ── 分组标题「简报」
@@ -718,6 +793,7 @@ class XiaoDanDelegate(NSObject):
             f"{self._report_time[0]:02d}:{self._report_time[1]:02d}")
         time_field.setBezeled_(True)
         time_field.setEditable_(True)
+        time_field.setTag_(1)
         time_field.setDelegate_(self)
         time_row.addSubview_(time_field)
         self._settings_views.append(time_row)
@@ -761,21 +837,80 @@ class XiaoDanDelegate(NSObject):
 
     def toggleWellness_(self, sender):
         self._wellness_enabled = not self._wellness_enabled
+        self._save_settings()
         self._show_settings()
 
     def toggleChartType_(self, sender):
         self._chart_mode = "donut" if sender.selectedSegment() == 0 else "bar"
+        self._save_settings()
         self._show_settings()
+
+    def toggleStandup_(self, sender):
+        self._standup_enabled = bool(sender.state())
+        self._save_settings()
+        try:
+            import standup_reminder
+            standup_reminder.timer.configure(self._standup_enabled, self._standup_interval)
+        except Exception:
+            pass
+        self._show_settings()
+
+    def showStandupAlert_(self, _):
+        try:
+            import standup_reminder as _sr
+            elapsed = _sr.timer._last_elapsed_min
+        except Exception:
+            elapsed = self._standup_interval
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("起来走动一下吧")
+        alert.setInformativeText_(f"你已经连续使用电脑 {elapsed} 分钟了")
+        alert.addButtonWithTitle_("好")
+        alert.runModal()
+
+    @objc.python_method
+    def _save_settings(self):
+        try:
+            from settings import save_settings
+            save_settings({
+                "chart_mode": self._chart_mode,
+                "wellness_enabled": self._wellness_enabled,
+                "report_time": list(self._report_time),
+                "standup_reminder_enabled": self._standup_enabled,
+                "standup_interval_minutes": self._standup_interval,
+            })
+        except Exception as e:
+            print(f"[ui] settings 保存失败: {e}")
 
     def controlTextDidEndEditing_(self, notification):
         import re
         field = notification.object()
+        tag = int(field.tag())
         text = field.stringValue().strip()
+
+        if tag == 2:  # 提醒间隔
+            try:
+                val = int(text)
+                if 5 <= val <= 180:
+                    self._standup_interval = val
+                    self._save_settings()
+                    try:
+                        import standup_reminder
+                        standup_reminder.timer.configure(self._standup_enabled, val)
+                    except Exception:
+                        pass
+                    return
+            except ValueError:
+                pass
+            field.setStringValue_(str(self._standup_interval))
+            return
+
+        # 简报时间字段（tag 默认 0 或 1）
         m = re.match(r'^(\d{1,2}):(\d{2})$', text)
         if m:
             h, mn = int(m.group(1)), int(m.group(2))
             if 17 <= h <= 23 and 0 <= mn <= 59:
                 self._report_time = (h, mn)
+                self._save_settings()
                 return
         field.setStringValue_(
             f"{self._report_time[0]:02d}:{self._report_time[1]:02d}")
