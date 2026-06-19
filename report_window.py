@@ -28,6 +28,7 @@ from analyzer import (
     get_book_notes, save_book_note,
     update_book_note, delete_book_note,
     get_monthly_reflection, save_monthly_reflection,
+    get_monthly_summary,
 )
 
 
@@ -1102,7 +1103,30 @@ function doSave(){{
                 f'flex-shrink:0;text-align:right;">{fmt_duration(secs)}</span>'
                 f'</div>'
             )
-        return html + '</div>'
+        html += '</div>'
+
+        # ── 月报 AI 叙事总结（进度条列表下方）────────────────────────────────
+        monthly_summary = get_monthly_summary(year, month)
+        if monthly_summary:
+            summary_escaped = (monthly_summary
+                               .replace("&", "&amp;")
+                               .replace("<", "&lt;")
+                               .replace('"', "&quot;"))
+            html += (
+                f'<div style="margin-top:32px;">'
+                f'<div style="font-size:11px;color:#8E8E93;margin-bottom:10px;'
+                f'letter-spacing:.3px;">本月总结</div>'
+                f'<div style="font-size:13px;color:#1C1C1E;line-height:1.85;'
+                f'white-space:pre-wrap;">{summary_escaped}</div>'
+                f'</div>'
+            )
+        else:
+            html += (
+                '<div style="margin-top:32px;font-size:12px;color:#C0C0C5;'
+                'text-align:center;padding:14px 0;">月底会自动生成本月总结</div>'
+            )
+
+        return html
 
     # ── WKUIDelegate ─────────────────────────────────────────────────────────
 

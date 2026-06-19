@@ -798,6 +798,123 @@ def generate_monthly_summary(year: int, month: int) -> str | None:
     return content
 
 
+# ── 月报叙事总结（使用聚合数据） ───────────────────────────────────────────────
+
+_MONTHLY_REPORT_SYSTEM_PROMPT = """你是用户的个人月度回顾助手，用中文写一篇简短的月度总结。
+
+语气：像一个看过你这个月数据的细心朋友，平实、温和地跟你聊聊这个月的情况。
+不用比喻句、不写诗、不用"像一场积蓄""沉进去""接住自己"这类偏文学的表达。
+直接陈述事实，可以有轻微情感色彩，但要克制、自然。
+
+结构（不要输出任何标题，直接按顺序写四个段落）：
+
+第一段：一句话平实定调，说清这个月整体过得怎么样。
+
+第二段：先说这个月时间最大的去向和核心数字，再一句展开具体在做什么。
+然后紧接着说和上月相比有什么变化（哪涨哪降，大概多少），
+如果没有上月数据，就跳过对比，不要硬凑。
+
+第三段：一两句说作息时段的主要规律，指出哪个时段最集中、大概多少小时，简洁即可。
+
+第四段：一句话收尾，温和，不说教，不套路。
+
+写作要求：
+- 总字数280-420字，中文输出
+- 不要输出任何 markdown 标记，不要用加粗、标题符号或列表符号
+- 每段开头先点出核心结论，关键数字靠近段落开头
+- 段落之间用简单自然的连接词过渡
+- 不要使用波折号、破折号或任何横线符号"""
+
+
+def _fmt_month_stats_for_prompt(year: int, month: int,
+                                 stats: dict,
+                                 period_stats: dict) -> str:
+    """把当月聚合数据格式化为 LLM prompt 用的文本。"""
+    _, last_day = calendar.monthrange(year, month)
+    total    = stats.get("total_seconds", 0)
+    by_cat   = stats.get("by_category", {})
+
+    def _hm(s):
+        s = int(s)
+        h, m = s // 3600, (s % 3600) // 60
+        if h and m: return f"{h}小时{m}分钟"
+        if h:       return f"{h}小时"
+        return f"{m}分钟"
+
+    lines = [f"{year}年{month}月（共{last_day}天）"]
+    lines.append(f"全类别总时长：{_hm(total)}")
+    for cat in ("自主学习", "学校学习", "娱乐", "其他"):
+        secs = by_cat.get(cat, {}).get("seconds", 0)
+        pct  = round(secs / total * 100) if total > 0 else 0
+        lines.append(f"  {cat}：{_hm(secs)}（{pct}%）")
+
+    # 时段汇总（仅学习类）
+    p_totals   = {"早": 0, "午": 0, "晚": 0}
+    active_days = 0
+    for d in range(1, last_day + 1):
+        d_str = f"{year}-{month:02d}-{d:02d}"
+        day_d = period_stats.get(d_str, {})
+        if sum(day_d.values()) > 0:
+            active_days += 1
+        for p in ("早", "午", "晚"):
+            p_totals[p] += day_d.get(p, 0)
+
+    lines.append(f"学习时段分布（学校+自主，有记录{active_days}天）：")
+    period_labels = {"早": "6-12时", "午": "12-18时", "晚": "18-次日6时"}
+    for p in ("早", "午", "晚"):
+        avg = p_totals[p] // max(active_days, 1)
+        lines.append(f"  {p}（{period_labels[p]}）：月合计{_hm(p_totals[p])}，"
+                     f"活跃日均{_hm(avg)}")
+    return "\n".join(lines)
+
+
+def generate_monthly_report(year: int, month: int) -> str | None:
+    """生成月报叙事总结，使用聚合数据（非原始记录），存入 monthly_summaries 表。
+
+    当月无数据时返回 None。结果存入 monthly_summaries(year, month, content, generated_at)。
+    """
+    stats = get_month_stats(year, month)
+    if stats.get("total_seconds", 0) == 0:
+        return None
+
+    period_stats = get_month_daily_period_stats(year, month)
+
+    prev_year   = year - 1 if month == 1 else year
+    prev_month  = 12      if month == 1 else month - 1
+    prev_stats  = get_month_stats(prev_year, prev_month)
+    prev_period = get_month_daily_period_stats(prev_year, prev_month)
+
+    this_text = _fmt_month_stats_for_prompt(year, month, stats, period_stats)
+    prev_text = (
+        _fmt_month_stats_for_prompt(prev_year, prev_month, prev_stats, prev_period)
+        if prev_stats.get("total_seconds", 0) > 0
+        else f"{prev_year}年{prev_month}月：无数据"
+    )
+
+    user_msg = (f"本月数据：\n{this_text}\n\n"
+                f"上月数据（对比参考）：\n{prev_text}")
+
+    import anthropic
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("未设置 ANTHROPIC_API_KEY")
+
+    client = anthropic.Anthropic(api_key=api_key)
+    msg = client.messages.create(
+        model=MODEL,
+        max_tokens=900,
+        system=_MONTHLY_REPORT_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+    content = next(
+        (blk.text for blk in msg.content if hasattr(blk, "text")), ""
+    ).strip()
+    content = content.replace("——", "").replace("～", "").replace("~", "").strip()
+
+    save_monthly_summary(year, month, content)
+    return content
+
+
 if __name__ == "__main__":
     import sys
     from datetime import date

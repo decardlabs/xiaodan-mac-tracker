@@ -30,10 +30,12 @@ except ImportError:
         return None
 
 try:
-    from analyzer import get_report, generate_report
+    from analyzer import get_report, generate_report, get_monthly_summary, generate_monthly_report
 except ImportError:
     def get_report(date_str): return None
     def generate_report(date_str): return None
+    def get_monthly_summary(y, m): return None
+    def generate_monthly_report(y, m): return None
 
 try:
     from report_window import show_report_window
@@ -552,8 +554,9 @@ class XiaoDanDelegate(NSObject):
             self._menu              = None    # 当前首页 NSMenu（用于 menuWillOpen_ 对比）
             self._report_time       = (19, 0)
             self._show_report       = False   # False=图表，True=简报
-            self._generating_report = False   # 防止并发生成
-            self._last_recheck_time = None    # 每小时触发一次 --recheck-other
+            self._generating_report  = False   # 防止日报并发生成
+            self._generating_monthly = False   # 防止月报并发生成
+            self._last_recheck_time  = None    # 每小时触发一次 --recheck-other
         return self
 
     # ── NSApplicationDelegate ────────────────────────────────────────────────
@@ -803,6 +806,25 @@ class XiaoDanDelegate(NSObject):
                         "refreshAfterReport:", None, False
                     )
             threading.Thread(target=_gen, daemon=True).start()
+
+        # 每月1日检查：如果上月月报还没生成，后台生成
+        today = date.today()
+        if today.day == 1 and not self._generating_monthly:
+            prev_year  = today.year - 1 if today.month == 1 else today.year
+            prev_month = 12             if today.month == 1 else today.month - 1
+            if get_monthly_summary(prev_year, prev_month) is None:
+                self._generating_monthly = True
+                _py, _pm = prev_year, prev_month
+
+                def _gen_monthly():
+                    try:
+                        generate_monthly_report(_py, _pm)
+                    except Exception:
+                        pass
+                    finally:
+                        self._generating_monthly = False
+
+                threading.Thread(target=_gen_monthly, daemon=True).start()
 
     def onClassifierDone_(self, notification):
         from datetime import date
