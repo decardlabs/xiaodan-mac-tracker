@@ -44,8 +44,8 @@ OPTIONS = {
         "CFBundleName": "小蛋",
         "CFBundleDisplayName": "小蛋",
         "CFBundleIdentifier": "com.xiaodan.desktoptracker",
-        "CFBundleVersion": "0.77",
-        "CFBundleShortVersionString": "0.77",
+        "CFBundleVersion": "0.78",
+        "CFBundleShortVersionString": "0.78",
         "CFBundleIconFile": "XiaoDan",
         # 菜单栏应用：隐藏 Dock 图标（等价于 app.setActivationPolicy_(1)）
         "LSUIElement": True,

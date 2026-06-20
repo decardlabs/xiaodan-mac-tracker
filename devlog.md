@@ -146,6 +146,86 @@
 
 ---
 
+## 2026年6月20日 — v0.78
+
+### 新增功能
+
+**起身提醒自定义图标**
+- 新增 `standup_icon.png`（400×145px，emoji 合成图，替换 NSAlert 系统默认图标）
+- `ui.py` 的 `showStandupAlert_` 用 `NSImage.alloc().initWithContentsOfFile_()` 加载图片，调用 `alert.setIcon_()` 替换系统默认图标
+- 资源路径遵循统一约定：`os.environ["RESOURCEPATH"]`（打包后）/ `os.path.dirname(__file__)`（开发环境），与 `wellness.py`、`report_window.py` 保持一致
+- `setup.py` DATA_FILES 新增 `standup_icon.png`，确保打包时图标随 `.app` 一同打包
+- 图标加载失败时有 try/except 保护，回退至系统默认图标
+
+### 当前状态
+
+- tracker 后台记录 ✅
+- classifier 自动分类（同进程调用，打包友好）✅
+- 菜单栏 UI（图表 + 目标 + 健康提醒 + 日报）✅
+- 周报/月报（标签栏导航 + 设置页）✅
+- 起身提醒（自定义图标弹窗）✅
+- 设置持久化（settings.json）✅
+- py2app 打包（build.sh 一键打包 + 签名）✅
+
+---
+
+## 2026年6月20日 — v0.77
+
+### 修复与改进
+
+**打包修复（H1–H5 + M1 + M3）**
+- **H1 Chart.js 路径**：`report_window.py` 改用 `sys.frozen` / `RESOURCEPATH` 模式定位 `chart.umd.min.js`，与 `wellness.py` 保持一致
+- **H2 packages 补全**：`setup.py` packages 列表补全所有自定义模块（`analyzer`、`classifier`、`settings`、`standup_reminder`、`wellness`、`report_window`、`ui`）
+- **H3 plist 路径说明**：`com.user.mactracker.plist` 加入 XML 注释，说明为开发机专用；launchd 不展开 `${HOME}`，路径须写绝对路径
+- **H4 classifier 同进程调用**：`tracker.py` 不再用 `subprocess.run` 调用 `classifier.py`（`.app` 包内 `.py` 路径失效），改为 `import classifier as _classifier_module` 同进程调用；`classifier.py` 新增 `run_classification(date_str, *, use_api, recheck_other)` 入口函数
+- **H5 孤立 activity.db**：删除项目根目录遗留的 672 MB `activity.db`；移除 `tracker.py` 的死代码迁移块和 `import shutil`
+- **M1 wellness 路径**：`wellness.py` RESOURCEPATH 模式已正确，补全 `setup.py` 注释说明
+- **M3 参数范围校验**：`report_window.py` 新增 `_valid_int(key, lo, hi)` 函数，`xd://` URL 参数（year/week/month）均加范围检查（2020–2100 / 1–53 / 1–12），非法值打印日志并忽略
+
+**图标更新**
+- 从 `logo.iconset/` 重新编译 `XiaoDan.icns`（新 logo 设计）；删除旧 `xiaodan_icon.icns`
+- `setup.py` iconfile 改为 `XiaoDan.icns`
+
+**打包自动化**
+- 新增 `build.sh`：`rm -rf build dist` → `python3 setup.py py2app` → `codesign --force --deep --sign -`
+- Apple Silicon 上 py2app 构建成功但签名无效（`SIGKILL Code Signature Invalid`）；`build.sh` 末尾自动 ad-hoc 签名为必须步骤
+
+---
+
+## 2026年6月20日 — v0.76
+
+### 新增功能
+
+**Chart.js 改为本地内嵌**
+- `report_window.py` 不再从 CDN 加载 Chart.js（WKWebView 沙箱在部分网络环境下阻断外网请求）
+- 改为读取本地 `chart.umd.min.js` 并直接内嵌到 HTML `<script>` 标签
+- `setup.py` DATA_FILES 新增 `chart.umd.min.js`，打包时复制到 `Contents/Resources/`
+- 资源路径同样采用 `sys.frozen` / `RESOURCEPATH` 模式，打包和开发环境均可正常加载
+
+---
+
+## 2026年6月20日 — v0.75
+
+### 新增功能
+
+**AI 简报开关 + 错误状态区分**
+- `settings.py` 新增 `api_enabled` 字段（默认 `True`）
+- `analyzer.py`：模块顶层 `import anthropic`；新增 `APIDisabledError` / `APIKeyMissingError` 异常类；`generate_report` / `generate_monthly_report` / `generate_monthly_summary` 在调用 API 前先检查 `api_enabled` 和 `ANTHROPIC_API_KEY`
+- `ui.py`：三处 `except Exception: pass` 改为捕获具体异常并记录 `_report_last_error`；`_build_report_view` 按状态分别显示「AI 简报已关闭」/「未设置 API Key」/「暂时无法获取简报」
+- `report_window.py`：侧边栏底部新增「设置」入口；设置页含「启用 AI 简报」开关，通过 `xd://save_api_enabled` 桥接写入 `settings.json`
+
+---
+
+## 2026年6月20日 — v0.74
+
+### 修复与改进
+
+**日志路径迁移**
+- `com.user.mactracker.plist` 的 `StandardOutPath` / `StandardErrorPath` 改指向 `~/Library/Logs/XiaoDan/`，不再依赖项目目录路径（为打包 .app 做准备）
+- `launch_tracker.sh` 添加注释，说明脚本为手动调试备用，日常由 launchd 管理
+
+---
+
 ## 2026年6月19日 — v0.73
 
 ### 新增功能
@@ -258,17 +338,20 @@
 
 **py2app 打包配置**
 - 新增 `setup.py`，配置 py2app 打包参数：
-  - `iconfile: xiaodan_icon.icns`，Info.plist 中 `CFBundleIconFile`、`LSUIElement: True`
+  - `iconfile: XiaoDan.icns`（由 `logo.iconset` 编译生成），Info.plist 中 `CFBundleIconFile`、`LSUIElement: True`
   - `excludes: ['tkinter']`：排除 Tk/Tcl 框架，解决打包时 ad-hoc 签名因 `libtkstub.a` 失败的问题
 - 修复 `wellness.py` 资源路径：
   - 打包后 `wellness.py` 在 `Contents/Resources/lib/python3.14/`，而 JSON 在 `Contents/Resources/`
   - 改用 `os.environ["RESOURCEPATH"]`（py2app 启动时注入）定位资源根目录，开发环境退回 `__file__` 相对路径
+- **打包命令**：`./build.sh`（不要直接跑 `python3 setup.py py2app`）
+  - 脚本内部：清理旧产物 → py2app → codesign ad-hoc 签名（Apple Silicon 必须步骤，否则启动时被系统 kill）
 
 ### 问题与解决
 
 - py2app 签名失败（`RuntimeError: Cannot sign bundle`）→ `excludes: ['tkinter']` 排除无法签名的 Tk 静态库
 - wellness JSON 路径在打包后失效 → 改用 `RESOURCEPATH` 环境变量，实测验证路径正确
 - LaunchAgent `KeepAlive: true` 导致 tracker 无法临时停止测试 → 移走 plist 再测，测后还原
+- Apple Silicon 打包后 app 启动被 kill（`SIGKILL Code Signature Invalid`）→ `build.sh` 末尾自动执行 `codesign --force --deep --sign -`
 
 ### 当前状态
 
