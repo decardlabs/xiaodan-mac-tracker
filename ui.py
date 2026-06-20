@@ -31,12 +31,17 @@ except ImportError:
         return None
 
 try:
-    from analyzer import get_report, generate_report, get_monthly_summary, generate_monthly_report
+    from analyzer import (
+        get_report, generate_report, get_monthly_summary, generate_monthly_report,
+        APIDisabledError, APIKeyMissingError,
+    )
 except ImportError:
     def get_report(date_str): return None
     def generate_report(date_str): return None
     def get_monthly_summary(y, m): return None
     def generate_monthly_report(y, m): return None
+    class APIDisabledError(Exception): pass
+    class APIKeyMissingError(Exception): pass
 
 try:
     from report_window import show_report_window
@@ -554,6 +559,7 @@ class XiaoDanDelegate(NSObject):
             self._show_report       = False   # False=图表，True=简报
             self._generating_report  = False   # 防止日报并发生成
             self._generating_monthly = False   # 防止月报并发生成
+            self._report_last_error  = None    # None | "disabled" | "no_key" | "failed"
             self._last_recheck_time  = None    # 每小时触发一次 --recheck-other
             # 从持久化设置加载
             self._chart_mode       = "donut"
@@ -932,8 +938,13 @@ class XiaoDanDelegate(NSObject):
             def _gen():
                 try:
                     generate_report(today_str)
+                    self._report_last_error = None
+                except APIDisabledError:
+                    self._report_last_error = "disabled"
+                except APIKeyMissingError:
+                    self._report_last_error = "no_key"
                 except Exception:
-                    pass
+                    self._report_last_error = "failed"
                 finally:
                     self._generating_report = False
                 if self._show_report:
@@ -954,8 +965,10 @@ class XiaoDanDelegate(NSObject):
                 def _gen_monthly():
                     try:
                         generate_monthly_report(_py, _pm)
-                    except Exception:
+                    except (APIDisabledError, APIKeyMissingError):
                         pass
+                    except Exception as e:
+                        print(f"[ui] 月报生成失败: {e}")
                     finally:
                         self._generating_monthly = False
 
@@ -1011,8 +1024,13 @@ class XiaoDanDelegate(NSObject):
         def _gen():
             try:
                 generate_report(target_str)
+                self._report_last_error = None
+            except APIDisabledError:
+                self._report_last_error = "disabled"
+            except APIKeyMissingError:
+                self._report_last_error = "no_key"
             except Exception:
-                pass
+                self._report_last_error = "failed"
             finally:
                 self._generating_report = False
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1122,17 +1140,38 @@ class XiaoDanDelegate(NSObject):
             tf.cell().setWraps_(True)
             container.addSubview_(tf)
         else:
-            # 无简报：今天（已过时间）或历史日期，均显示生成按钮
-            label_text = "暂时无法获取简报" if is_today else "暂无简报"
-            container.addSubview_(_label(label_text, 50, 30))
-            btn_title = "↻ 重试" if is_today else "↻ 生成"
-            retry = NSButton.alloc().initWithFrame_(((204, 4), (50, 18)))
-            retry.setTitle_(btn_title)
-            retry.setFont_(NSFont.systemFontOfSize_(10))
-            retry.setBordered_(False)
-            retry.setTarget_(self)
-            retry.setAction_("retryReport:")
-            container.addSubview_(retry)
+            err = getattr(self, "_report_last_error", None)
+            try:
+                from settings import load_settings
+                api_on = load_settings().get("api_enabled", True)
+            except Exception:
+                api_on = True
+
+            if not api_on or err == "disabled":
+                container.addSubview_(_label("AI 简报已关闭", 50, 30))
+            elif err == "no_key":
+                container.addSubview_(_label("未设置 API Key", 55, 22))
+                sub = NSTextField.alloc().initWithFrame_(((0, 30), (260, 18)))
+                sub.setStringValue_("可在设置页填写 Key 后重启生效")
+                sub.setEditable_(False)
+                sub.setSelectable_(False)
+                sub.setBezeled_(False)
+                sub.setDrawsBackground_(False)
+                sub.setFont_(NSFont.systemFontOfSize_(11))
+                sub.setTextColor_(gray)
+                sub.setAlignment_(1)
+                container.addSubview_(sub)
+            else:
+                label_text = "暂时无法获取简报" if is_today else "暂无简报"
+                container.addSubview_(_label(label_text, 50, 30))
+                btn_title = "↻ 重试" if is_today else "↻ 生成"
+                retry = NSButton.alloc().initWithFrame_(((204, 4), (50, 18)))
+                retry.setTitle_(btn_title)
+                retry.setFont_(NSFont.systemFontOfSize_(10))
+                retry.setBordered_(False)
+                retry.setTarget_(self)
+                retry.setAction_("retryReport:")
+                container.addSubview_(retry)
 
         return container
 

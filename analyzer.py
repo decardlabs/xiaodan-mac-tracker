@@ -15,8 +15,19 @@ try:
 except ImportError:
     pass
 
+import anthropic
+
 DB_PATH = os.path.expanduser("~/Library/Application Support/XiaoDan/activity.db")
 MODEL = "deepseek-v4-flash"
+
+
+class APIDisabledError(Exception):
+    """用户已在设置中关闭 AI 简报。"""
+
+
+class APIKeyMissingError(Exception):
+    """api_enabled=True 但未配置 ANTHROPIC_API_KEY。"""
+
 
 # 与 tracker.py 保持一致：间隔超过此值视为休眠，不计入时长
 _SLEEP_DETECT_THRESHOLD = 600  # 5s * 120 = 10分钟
@@ -184,10 +195,13 @@ def generate_report(date_str: str) -> str | None:
     if activities_text is None:
         return None
 
-    import anthropic  # 懒加载：仅在实际需要 API 时导入
+    from settings import load_settings
+    if not load_settings().get("api_enabled", True):
+        raise APIDisabledError()
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        raise RuntimeError("未设置 ANTHROPIC_API_KEY")
+        raise APIKeyMissingError("未设置 ANTHROPIC_API_KEY")
 
     client = anthropic.Anthropic(api_key=api_key)
     msg = client.messages.create(
@@ -773,10 +787,13 @@ def generate_monthly_summary(year: int, month: int) -> str | None:
     if activities_text is None and book_notes_text is None:
         return None
 
-    import anthropic  # 懒加载：仅在实际需要 API 时导入
+    from settings import load_settings
+    if not load_settings().get("api_enabled", True):
+        raise APIDisabledError()
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        raise RuntimeError("未设置 ANTHROPIC_API_KEY")
+        raise APIKeyMissingError("未设置 ANTHROPIC_API_KEY")
 
     user_msg = f"{year}年{month}月电脑使用记录：\n\n{activities_text or '（无数据）'}"
     if book_notes_text:
@@ -894,10 +911,13 @@ def generate_monthly_report(year: int, month: int) -> str | None:
     user_msg = (f"本月数据：\n{this_text}\n\n"
                 f"上月数据（对比参考）：\n{prev_text}")
 
-    import anthropic
+    from settings import load_settings
+    if not load_settings().get("api_enabled", True):
+        raise APIDisabledError()
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        raise RuntimeError("未设置 ANTHROPIC_API_KEY")
+        raise APIKeyMissingError("未设置 ANTHROPIC_API_KEY")
 
     client = anthropic.Anthropic(api_key=api_key)
     msg = client.messages.create(

@@ -199,6 +199,42 @@ class ReportWindow(NSObject):
             y, w, _ = today.isocalendar()
         self._render_week(y, w, sub="booknotes", toast=toast)
 
+    @objc.python_method
+    def _render_settings(self, toast=None):
+        self._current_type = "settings"
+        self._current_key  = None
+        self._current_sub  = None
+        today = _date.today()
+        sidebar = self._build_sidebar("settings", today.year, today.month)
+        content = self._build_settings_content(toast=toast)
+        self._load_html(self._build_page(sidebar, content))
+
+    @objc.python_method
+    def _build_settings_content(self, toast=None) -> str:
+        from settings import load_settings
+        s = load_settings()
+        checked = "checked" if s.get("api_enabled", True) else ""
+
+        html = '<div class="page-title">设置</div>'
+        html += '<hr class="sec-div">'
+        html += (
+            f'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;">'
+            f'<div>'
+            f'<div style="font-size:13px;color:#1C1C1E;">启用 AI 简报</div>'
+            f'<div style="font-size:11px;color:#8E8E93;margin-top:3px;">关闭后不调用 AI 接口，修改后重启生效</div>'
+            f'</div>'
+            f'<label class="xd-toggle">'
+            f'<input type="checkbox" {checked} '
+            f'onchange="xdNav(\'xd://save_api_enabled?value=\'+(this.checked?\'1\':\'0\'))">'
+            f'<span class="xd-toggle-slider"></span>'
+            f'</label>'
+            f'</div>'
+        )
+        if toast:
+            import json as _json
+            html += f'<script>setTimeout(function(){{showToast({_json.dumps(toast)});}},50);</script>'
+        return html
+
     # ── HTML 骨架 ─────────────────────────────────────────────────────────────
 
     @objc.python_method
@@ -277,6 +313,12 @@ input[type=text]:focus{{border-color:#9B72CF;}}
 .xd-btn-cancel{{background:#f2f2f7;color:#1c1c1e;}}
 .xd-btn-confirm{{background:#ff3b30;color:#fff;}}
 .xd-btn-confirm-gray{{background:#8e8e93;color:#fff;}}
+.xd-toggle{{position:relative;display:inline-block;width:40px;height:22px;flex-shrink:0;}}
+.xd-toggle input{{opacity:0;width:0;height:0;position:absolute;}}
+.xd-toggle-slider{{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#D0D0D0;border-radius:22px;transition:.2s;}}
+.xd-toggle-slider:before{{position:absolute;content:"";height:18px;width:18px;left:2px;bottom:2px;background:#fff;border-radius:50%;transition:.2s;}}
+.xd-toggle input:checked+.xd-toggle-slider{{background:#1C1C1E;}}
+.xd-toggle input:checked+.xd-toggle-slider:before{{transform:translateX(18px);}}
 </style>
 <script>
 function xdNav(p){{window.location.href=p;}}
@@ -405,6 +447,11 @@ function saveMonthlyReflection(year,month,content){{
                 html += (f'<a class="nav-month{cls}" '
                          f'onclick="navigate(\'month\',{y},{m})">{m}月</a>')
             html += '</div>'
+
+        html += '<hr class="divider">'
+        settings_cls = " active" if active_type == "settings" else ""
+        html += (f'<a class="nav-month{settings_cls}" style="padding-left:12px;" '
+                 f'onclick="xdNav(\'xd://navigate_settings\')">⚙ 设置</a>')
 
         return html
 
@@ -1267,6 +1314,17 @@ function doSave(){{
                 self._webview.evaluateJavaScript_completionHandler_(
                     'showToast("已保存")', None
                 )
+
+        elif action == "navigate_settings":
+            self._render_settings()
+
+        elif action == "save_api_enabled":
+            from settings import load_settings, save_settings
+            val = qs.get("value", ["1"])[0] == "1"
+            s = load_settings()
+            s["api_enabled"] = val
+            save_settings(s)
+            self._render_settings(toast="已保存，重启后生效")
 
 
 # ── 对外接口 ──────────────────────────────────────────────────────────────────

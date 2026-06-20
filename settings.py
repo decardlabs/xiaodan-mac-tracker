@@ -10,6 +10,7 @@ _DEFAULTS = {
     "report_time": [19, 0],
     "standup_reminder_enabled": False,
     "standup_interval_minutes": 45,
+    "api_enabled": True,
 }
 
 

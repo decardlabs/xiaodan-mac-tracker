@@ -27,6 +27,8 @@ import time
 from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
+import anthropic
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -652,7 +654,6 @@ def main() -> None:
     # 建立 API 客户端（除非 --no-api）
     client = None
     if not args.no_api:
-        import anthropic  # 懒加载：仅在实际需要 API 时导入
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if api_key:
             client = anthropic.Anthropic(api_key=api_key)
