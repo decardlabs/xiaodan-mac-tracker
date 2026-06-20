@@ -3,6 +3,7 @@
 """
 
 import os
+import sys
 import sqlite3
 import threading
 import webbrowser
@@ -20,6 +21,7 @@ try:
         NSVariableStatusItemLength,
         NSWindow, NSButton, NSTextField, NSBox, NSSegmentedControl,
         NSAlert,
+        NSImage,
     )
 except ImportError:
     raise SystemExit("缺少依赖，请运行：pip install pyobjc-framework-Cocoa")
@@ -871,6 +873,16 @@ class XiaoDanDelegate(NSObject):
         alert.setMessageText_("起来走动一下吧")
         alert.setInformativeText_(f"你已经连续使用电脑 {elapsed} 分钟了")
         alert.addButtonWithTitle_("好")
+        try:
+            _base = os.environ["RESOURCEPATH"] if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+            _icon_path = os.path.join(_base, "standup_icon.png")
+            _img = NSImage.alloc().initWithContentsOfFile_(_icon_path)
+            if _img is not None:
+                alert.setIcon_(_img)
+            else:
+                print(f"[standup] 图标加载返回 None：{_icon_path}")
+        except Exception as _e:
+            print(f"[standup] 图标加载失败，使用系统默认图标：{_e}")
         alert.runModal()
 
     @objc.python_method

@@ -15,7 +15,7 @@ APP = ["tracker.py"]
 DATA_FILES = [
     # 资源文件统一放到 Contents/Resources/，打包后用 RESOURCEPATH 环境变量定位
     # （见 wellness.py / report_window.py 的 sys.frozen 分支）
-    ("", ["wellness_activities.json", "chart.umd.min.js"]),
+    ("", ["wellness_activities.json", "chart.umd.min.js", "standup_icon.png"]),
     ("web", ["web/app.py"]),
 ]
 
@@ -23,7 +23,7 @@ OPTIONS = {
     # menubar-only 应用必须关掉 argv_emulation
     "argv_emulation": False,
     "excludes": ["tkinter"],
-    "iconfile": "xiaodan_icon.icns",
+    "iconfile": "XiaoDan.icns",
     "packages": [
         "AppKit",
         "Foundation",
@@ -46,7 +46,7 @@ OPTIONS = {
         "CFBundleIdentifier": "com.xiaodan.desktoptracker",
         "CFBundleVersion": "0.77",
         "CFBundleShortVersionString": "0.77",
-        "CFBundleIconFile": "xiaodan_icon",
+        "CFBundleIconFile": "XiaoDan",
         # 菜单栏应用：隐藏 Dock 图标（等价于 app.setActivationPolicy_(1)）
         "LSUIElement": True,
         # 权限说明文字（macOS 隐私提示）
