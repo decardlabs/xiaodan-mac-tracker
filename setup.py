@@ -13,10 +13,9 @@ from setuptools import setup
 APP = ["tracker.py"]
 
 DATA_FILES = [
-    # wellness_activities.json 由 wellness.py 通过 __file__ 相对路径加载
-    # py2app 会把它放到 Contents/Resources/，需配合 sys._MEIPASS 或
-    # resourcepath() 读取；打包后如有路径问题请参考注释 [1]。
-    ("", ["wellness_activities.json"]),
+    # 资源文件统一放到 Contents/Resources/，打包后用 RESOURCEPATH 环境变量定位
+    # （见 wellness.py / report_window.py 的 sys.frozen 分支）
+    ("", ["wellness_activities.json", "chart.umd.min.js"]),
     ("web", ["web/app.py"]),
 ]
 
@@ -33,16 +32,20 @@ OPTIONS = {
         "objc",
         "analyzer",
         "classifier",
+        "settings",
+        "standup_reminder",
         "wellness",
         "report_window",
         "ui",
+        "anthropic",
+        "dotenv",
     ],
     "plist": {
         "CFBundleName": "小蛋",
         "CFBundleDisplayName": "小蛋",
         "CFBundleIdentifier": "com.xiaodan.desktoptracker",
-        "CFBundleVersion": "0.62",
-        "CFBundleShortVersionString": "0.62",
+        "CFBundleVersion": "0.77",
+        "CFBundleShortVersionString": "0.77",
         "CFBundleIconFile": "xiaodan_icon",
         # 菜单栏应用：隐藏 Dock 图标（等价于 app.setActivationPolicy_(1)）
         "LSUIElement": True,
@@ -60,13 +63,8 @@ setup(
     setup_requires=["py2app"],
 )
 
-# [1] 打包后资源路径说明：
-#     wellness.py 当前用 os.path.dirname(os.path.abspath(__file__)) 拼路径，
-#     在 .app 包内 __file__ 指向 Contents/Resources/lib/pythonX.Y/...，
-#     不等于 Contents/Resources/。如打包后报 FileNotFoundError，
-#     把 wellness.py 第5行改为：
-#
-#         import sys
-#         _BASE = getattr(sys, "_MEIPASS", None) or \
-#                 os.path.join(os.path.dirname(sys.executable), "..", "Resources")
-#         _DATA_PATH = os.path.join(_BASE, "wellness_activities.json")
+# 打包后资源定位约定（wellness.py 和 report_window.py 均已采用）：
+#   if getattr(sys, "frozen", False):
+#       _base = os.environ["RESOURCEPATH"]   # py2app 设置的 Contents/Resources/ 路径
+#   else:
+#       _base = os.path.dirname(os.path.abspath(__file__))

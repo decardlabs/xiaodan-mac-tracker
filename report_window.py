@@ -4,6 +4,7 @@
 
 import json
 import os
+import sys
 import objc
 import urllib.parse
 from datetime import date as _date, timedelta as _timedelta
@@ -32,7 +33,8 @@ from analyzer import (
     get_monthly_summary,
 )
 
-_CHART_JS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chart.umd.min.js")
+_base = os.environ["RESOURCEPATH"] if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+_CHART_JS_PATH = os.path.join(_base, "chart.umd.min.js")
 with open(_CHART_JS_PATH, "r", encoding="utf-8") as _f:
     _CHART_JS_CONTENT = _f.read()
 
@@ -1224,19 +1226,28 @@ function doSave(){{
         def _str(key):
             return urllib.parse.unquote(qs[key][0]) if key in qs else ""
 
+        def _valid_int(key, lo, hi):
+            v = _int(key)
+            if v is None:
+                return None
+            if not (lo <= v <= hi):
+                print(f"[report_window] 非法参数 {key}={v!r}，合法范围 [{lo}, {hi}]，已忽略")
+                return None
+            return v
+
         if action == "navigate_week":
-            y, w = _int("year"), _int("week")
+            y, w = _valid_int("year", 2020, 2100), _valid_int("week", 1, 53)
             if y and w:
                 self._render_week(y, w)
 
         elif action == "navigate_week_sub":
-            y, w, sub = _int("year"), _int("week"), _str("sub")
+            y, w, sub = _valid_int("year", 2020, 2100), _valid_int("week", 1, 53), _str("sub")
             if y and w:
                 self._render_week(y, w, sub or None)
 
         elif action == "navigate_week_month":
             # Click on a month entry in the week sidebar section
-            y, m = _int("year"), _int("month")
+            y, m = _valid_int("year", 2020, 2100), _valid_int("month", 1, 12)
             if y and m:
                 target = None
                 for wy, ww, ds, _de in get_all_weeks():
@@ -1252,17 +1263,17 @@ function doSave(){{
                 self._render_week(*target)
 
         elif action == "navigate_month":
-            y, m = _int("year"), _int("month")
+            y, m = _valid_int("year", 2020, 2100), _valid_int("month", 1, 12)
             if y and m:
                 self._render_month(y, m)
 
         elif action == "navigate_month_sub":
-            y, m, sub = _int("year"), _int("month"), _str("sub")
+            y, m, sub = _valid_int("year", 2020, 2100), _valid_int("month", 1, 12), _str("sub")
             if y and m:
                 self._render_month(y, m, sub or None)
 
         elif action == "save_reflection":
-            y, w, content = _int("year"), _int("week"), _str("content")
+            y, w, content = _valid_int("year", 2020, 2100), _valid_int("week", 1, 53), _str("content")
             if y and w:
                 save_reflection(y, w, content)
                 self._render_week(y, w, self._current_sub)
@@ -1271,13 +1282,13 @@ function doSave(){{
             self._render_booknotes_history()
 
         elif action == "navigate_booknotes_new":
-            y, w = _int("year"), _int("week")
+            y, w = _valid_int("year", 2020, 2100), _valid_int("week", 1, 53)
             if y and w:
                 self._editing_note = None
                 self._render_week(y, w, sub="booknotes_new")
 
         elif action == "navigate_booknotes_edit":
-            y, w, nid = _int("year"), _int("week"), _int("id")
+            y, w, nid = _valid_int("year", 2020, 2100), _valid_int("week", 1, 53), _int("id")
             if y and w and nid:
                 all_notes = get_book_notes()
                 note = next((n for n in all_notes if n["id"] == nid), None)
@@ -1285,7 +1296,7 @@ function doSave(){{
                 self._render_week(y, w, sub="booknotes_edit")
 
         elif action == "save_book_note":
-            y, w = _int("year"), _int("week")
+            y, w = _valid_int("year", 2020, 2100), _valid_int("week", 1, 53)
             save_book_note(
                 _str("title"), _str("author"),
                 _str("date_read"), _str("tags"), _str("content"),
@@ -1313,7 +1324,7 @@ function doSave(){{
                 self._render_booknotes_history(toast="已删除")
 
         elif action == "save_monthly_reflection":
-            y, m, content = _int("year"), _int("month"), _str("content")
+            y, m, content = _valid_int("year", 2020, 2100), _valid_int("month", 1, 12), _str("content")
             if y and m:
                 save_monthly_reflection(y, m, content)
                 self._webview.evaluateJavaScript_completionHandler_(

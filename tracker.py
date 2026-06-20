@@ -13,7 +13,6 @@
 
 import fcntl
 import os
-import shutil
 import sys
 import time
 import threading
@@ -63,15 +62,6 @@ APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/XiaoDan")
 os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
 DB_PATH   = os.path.join(APP_SUPPORT_DIR, "activity.db")
 LOCK_FILE = os.path.join(APP_SUPPORT_DIR, "xiaodian.lock")
-
-# 旧数据库自动迁移：项目目录下的 activity.db → 新路径（仅首次）
-_OLD_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "activity.db")
-if os.path.exists(_OLD_DB) and not os.path.exists(DB_PATH):
-    try:
-        shutil.copy2(_OLD_DB, DB_PATH)
-        print(f"[迁移] 数据库已复制：{_OLD_DB} → {DB_PATH}")
-    except Exception as _e:
-        print(f"[迁移] 复制失败：{_e}")
 
 # 统计时过滤掉的系统应用（不计入使用时长）
 FILTER_APPS = {
@@ -126,8 +116,12 @@ class SharedState:
 
 state = SharedState()
 
-CLASSIFIER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "classifier.py")
 _classifier_running = False
+
+try:
+    import classifier as _classifier_module
+except ImportError:
+    _classifier_module = None
 
 try:
     import standup_reminder as _standup_reminder
@@ -726,17 +720,13 @@ def _check_other_category() -> None:
             other_secs = rows[0] if rows else 0
             if other_secs < 1800:  # 不足30分钟，不触发
                 return
-            result = subprocess.run(
-                [sys.executable, CLASSIFIER_PATH, "--recheck-other", "--date", today],
-                capture_output=True,
-                timeout=180,
-            )
-            if result.returncode != 0:
-                with open(_log_path, "a") as f:
-                    f.write(f"{datetime.now()} ERROR --recheck-other\n")
-                    f.write(result.stderr.decode(errors="replace") + "\n")
-            else:
-                _last_recheck_hour = current_hour
+            if _classifier_module:
+                try:
+                    _classifier_module.run_classification(date_str=today, use_api=True, recheck_other=True)
+                    _last_recheck_hour = current_hour
+                except Exception as exc:
+                    with open(_log_path, "a") as f:
+                        f.write(f"{datetime.now()} ERROR --recheck-other: {exc}\n")
         except Exception as e:
             with open(_log_path, "a") as f:
                 f.write(f"{datetime.now()} EXCEPTION _check_other_category: {e}\n")
@@ -822,24 +812,17 @@ def tracking_loop(conn: sqlite3.Connection) -> None:
                         _today.strftime("%Y-%m-%d"),
                     ]
 
-                    def _run_classifier(p=CLASSIFIER_PATH, dates=_dates):
+                    def _run_classifier(dates=_dates):
                         global _classifier_running
                         _log_path = os.path.join(APP_SUPPORT_DIR, "classifier_error.log")
                         try:
                             for d in dates:
                                 try:
-                                    result = subprocess.run(
-                                        [sys.executable, p, "--date", d, "--no-api"],
-                                        capture_output=True,
-                                        timeout=120,
-                                    )
-                                    if result.returncode != 0:
-                                        with open(_log_path, "a") as f:
-                                            f.write(f"{datetime.now()} ERROR --date {d}\n")
-                                            f.write(result.stderr.decode(errors="replace") + "\n")
-                                except subprocess.TimeoutExpired:
+                                    if _classifier_module:
+                                        _classifier_module.run_classification(date_str=d, use_api=False)
+                                except Exception as e:
                                     with open(_log_path, "a") as f:
-                                        f.write(f"{datetime.now()} TIMEOUT --date {d}\n")
+                                        f.write(f"{datetime.now()} ERROR --date {d}: {e}\n")
                         finally:
                             _classifier_running = False
 

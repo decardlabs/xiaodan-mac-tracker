@@ -628,6 +628,24 @@ def recheck_other_category(
     return len(hard_updates) + len(api_updates)
 
 
+def run_classification(date_str: str | None = None, *, use_api: bool = True, recheck_other: bool = False) -> None:
+    """同进程调用入口，供 tracker.py 在后台线程中调用，避免 .app 包内路径问题。"""
+    conn = sqlite3.connect(DB_PATH)
+    setup_db(conn)
+    client = None
+    if use_api:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if api_key:
+            client = anthropic.Anthropic(api_key=api_key)
+    try:
+        if recheck_other:
+            recheck_other_category(conn, client, date_str=date_str)
+        else:
+            classify_activity_log(conn, client, date=date_str)
+    finally:
+        conn.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="小蛋活动分类器（Claude Haiku 4.5）")
     parser.add_argument("--date", help="只处理指定日期 YYYY-MM-DD")
