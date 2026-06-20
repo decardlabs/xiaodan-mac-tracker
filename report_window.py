@@ -3,6 +3,7 @@
 """
 
 import json
+import os
 import objc
 import urllib.parse
 from datetime import date as _date, timedelta as _timedelta
@@ -30,6 +31,10 @@ from analyzer import (
     get_monthly_reflection, save_monthly_reflection,
     get_monthly_summary,
 )
+
+_CHART_JS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chart.umd.min.js")
+with open(_CHART_JS_PATH, "r", encoding="utf-8") as _f:
+    _CHART_JS_CONTENT = _f.read()
 
 
 # ── 颜色 & 分类常量 ──────────────────────────────────────────────────────────
@@ -243,7 +248,7 @@ class ReportWindow(NSObject):
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script>{_CHART_JS_CONTENT}</script>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;}}
 body{{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:#1C1C1E;display:flex;height:100vh;overflow:hidden;}}
