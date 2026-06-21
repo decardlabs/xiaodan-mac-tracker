@@ -634,9 +634,11 @@ def run_classification(date_str: str | None = None, *, use_api: bool = True, rec
     setup_db(conn)
     client = None
     if use_api:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if api_key:
-            client = anthropic.Anthropic(api_key=api_key)
+        from settings import load_settings
+        if load_settings().get("api_enabled", True):
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            if api_key:
+                client = anthropic.Anthropic(api_key=api_key)
     try:
         if recheck_other:
             recheck_other_category(conn, client, date_str=date_str)
