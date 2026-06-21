@@ -610,6 +610,14 @@ class XiaoDanDelegate(NSObject):
         except Exception:
             pass
 
+        from settings import load_settings
+        if not load_settings().get("onboarding_completed", True):
+            self._show_onboarding_flow()
+
+    def _show_onboarding_flow(self):
+        # TODO: 下一个任务实现引导窗口 UI
+        print("[onboarding] 首次启动，引导窗口待实现")
+
     # ── ObjC 可见方法（NSTimer 回调 & NSMenuItem actions） ──────────────────
     def refreshTitle_(self, timer):
         try:

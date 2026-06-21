@@ -25,6 +25,7 @@ _DEFAULTS = {
     "standup_interval_minutes": 45,
     "api_enabled": True,
     "custom_categories": DEFAULT_CATEGORY_PRESETS,
+    "onboarding_completed": False,  # 新用户默认 False，触发首次启动引导
 }
 
 
@@ -34,8 +35,11 @@ def load_settings() -> dict:
             data = json.load(f)
         merged = dict(_DEFAULTS)
         merged.update(data)
+        # 方案 A：文件存在但字段缺失 → 老用户升级，视为已完成引导，跳过弹窗
+        if "onboarding_completed" not in data:
+            merged["onboarding_completed"] = True
     except (FileNotFoundError, json.JSONDecodeError):
-        merged = dict(_DEFAULTS)
+        merged = dict(_DEFAULTS)  # 全新安装，onboarding_completed 保持 False
     # 防止调用方直接持有 DEFAULT_CATEGORY_PRESETS 引用而意外写穿（浅复制只复制一层）
     if merged.get("custom_categories") is DEFAULT_CATEGORY_PRESETS:
         merged["custom_categories"] = {k: list(v) for k, v in DEFAULT_CATEGORY_PRESETS.items()}
