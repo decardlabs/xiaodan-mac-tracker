@@ -222,13 +222,49 @@ class ReportWindow(NSObject):
         s = load_settings()
         checked = "checked" if s.get("api_enabled", True) else ""
 
+        key_invalid = False
+        fmt_error = False
+        if s.get("api_enabled", True):
+            try:
+                from classifier import is_api_key_invalid, is_api_format_error
+                key_invalid = is_api_key_invalid()
+                fmt_error = is_api_format_error()
+            except Exception:
+                pass
+
         html = '<div class="page-title">设置</div>'
         html += '<hr class="sec-div">'
+
+        if key_invalid:
+            warn_badge = (
+                ' <span style="display:inline-block;color:#D85A30;font-size:14px;'
+                'vertical-align:middle;cursor:default;" '
+                'title="API Key 可能已失效，请检查或重新配置">⚠</span>'
+            )
+            warn_note = (
+                '<div style="font-size:11px;color:#D85A30;margin-top:5px;">'
+                'API Key 可能已失效，请重新配置</div>'
+            )
+        elif fmt_error:
+            warn_badge = (
+                ' <span style="display:inline-block;color:#D85A30;font-size:14px;'
+                'vertical-align:middle;cursor:default;" '
+                'title="服务返回格式可能不兼容 Anthropic SDK，请确认 Base URL 服务商支持">⚠</span>'
+            )
+            warn_note = (
+                '<div style="font-size:11px;color:#D85A30;margin-top:5px;">'
+                '服务格式可能不兼容，请确认 Base URL 服务商支持 Anthropic 格式</div>'
+            )
+        else:
+            warn_badge = ''
+            warn_note = ''
+
         html += (
             f'<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;">'
             f'<div>'
-            f'<div style="font-size:13px;color:#1C1C1E;">启用 AI 简报</div>'
+            f'<div style="font-size:13px;color:#1C1C1E;">启用 AI 简报{warn_badge}</div>'
             f'<div style="font-size:11px;color:#8E8E93;margin-top:3px;">关闭后不调用 AI 接口，修改后重启生效</div>'
+            f'{warn_note}'
             f'</div>'
             f'<label class="xd-toggle">'
             f'<input type="checkbox" {checked} '
@@ -237,8 +273,25 @@ class ReportWindow(NSObject):
             f'</label>'
             f'</div>'
         )
+
+        # Base URL 编辑区
+        import json as _json
+        base_url_val = s.get("api_base_url", "").strip()
+        base_url_escaped = _json.dumps(base_url_val, ensure_ascii=False)
+        html += (
+            f'<div style="padding:10px 0;border-top:.5px solid #E0E0E0;">'
+            f'<div style="font-size:13px;color:#1C1C1E;margin-bottom:4px;">API Base URL</div>'
+            f'<div style="font-size:11px;color:#8E8E93;margin-bottom:8px;">'
+            f'留空使用 Anthropic 官方端点；填写可接入 OpenRouter 等代理服务</div>'
+            f'<input type="text" id="base-url-input" value={base_url_escaped} '
+            f'placeholder="https://openrouter.ai/api/v1" '
+            f'style="width:100%;box-sizing:border-box;padding:6px 8px;font-size:12px;'
+            f'border:.5px solid #C7C7CC;border-radius:6px;outline:none;font-family:inherit;" '
+            f'onblur="xdNav(\'xd://save_api_base_url?value=\'+encodeURIComponent(this.value.trim()))">'
+            f'</div>'
+        )
+
         if toast:
-            import json as _json
             html += f'<script>setTimeout(function(){{showToast({_json.dumps(toast)});}},50);</script>'
         return html
 
@@ -1340,7 +1393,79 @@ function doSave(){{
             s = load_settings()
             s["api_enabled"] = val
             save_settings(s)
+            if not val:
+                try:
+                    from classifier import clear_api_key_invalid, clear_api_format_error
+                    clear_api_key_invalid()
+                    clear_api_format_error()
+                except Exception:
+                    pass
             self._render_settings(toast="已保存，重启后生效")
+
+        elif action == "save_api_base_url":
+            from settings import load_settings, save_settings, get_api_credentials
+            val = urllib.parse.unquote(qs.get("value", [""])[0]).strip()
+            s = load_settings()
+            s["api_base_url"] = val
+            save_settings(s)
+            api_key, _ = get_api_credentials()
+            if val and api_key:
+                self._render_settings(toast="已保存，正在验证连通性...")
+                import threading
+                threading.Thread(
+                    target=self._bg_validate_base_url, args=(api_key, val), daemon=True
+                ).start()
+            elif val and not api_key:
+                self._render_settings(toast="Base URL 已保存（请先配置 API Key 才能验证连通性）")
+            else:
+                self._render_settings(toast="Base URL 已保存")
+
+    @objc.python_method
+    def _bg_validate_base_url(self, api_key: str, base_url: str):
+        """子线程：验证 base_url 连通性，结果通过 performSelector 切回主线程。"""
+        import json as _json
+        try:
+            import anthropic as _anthropic
+        except ImportError:
+            result = _json.dumps({"ok": False, "msg": "缺少 anthropic 依赖"})
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "onBaseUrlValidated:", result, False
+            )
+            return
+        try:
+            client = _anthropic.Anthropic(api_key=api_key, base_url=base_url)
+            client.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+            result = _json.dumps({"ok": True, "msg": "连通性验证通过"})
+        except _anthropic.AuthenticationError:
+            result = _json.dumps({"ok": False, "msg": "该地址下 API Key 认证失败，请检查 Key 与 URL 是否匹配"})
+        except _anthropic.RateLimitError:
+            result = _json.dumps({"ok": True, "msg": "连通性验证通过（触发限流，Key 有效）"})
+        except (_anthropic.APIConnectionError, _anthropic.APITimeoutError):
+            result = _json.dumps({"ok": False, "msg": "无法连接到该地址，请检查 URL 是否正确"})
+        except _anthropic.APIResponseValidationError as e:
+            result = _json.dumps({"ok": False, "msg": f"服务返回格式与 Anthropic SDK 不兼容，请确认服务商支持"})
+        except Exception as e:
+            result = _json.dumps({"ok": False, "msg": f"验证时遇到异常：{e}"})
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "onBaseUrlValidated:", result, False
+        )
+
+    def onBaseUrlValidated_(self, result_json):
+        """主线程 ObjC 方法：接收验证结果并刷新设置页。"""
+        import json as _json
+        try:
+            data = _json.loads(str(result_json))
+            ok = data.get("ok", False)
+            msg = data.get("msg", "未知结果")
+        except Exception:
+            ok = False
+            msg = "验证结果解析失败"
+        toast = f"✓ {msg}" if ok else f"✗ {msg}"
+        self._render_settings(toast=toast)
 
 
 # ── 对外接口 ──────────────────────────────────────────────────────────────────

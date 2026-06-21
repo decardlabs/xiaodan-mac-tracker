@@ -24,6 +24,8 @@ _DEFAULTS = {
     "standup_reminder_enabled": False,
     "standup_interval_minutes": 45,
     "api_enabled": True,
+    "api_key": "",
+    "api_base_url": "",
     "custom_categories": DEFAULT_CATEGORY_PRESETS,
     "onboarding_completed": False,  # 新用户默认 False，触发首次启动引导
 }
@@ -44,6 +46,29 @@ def load_settings() -> dict:
     if merged.get("custom_categories") is DEFAULT_CATEGORY_PRESETS:
         merged["custom_categories"] = {k: list(v) for k, v in DEFAULT_CATEGORY_PRESETS.items()}
     return merged
+
+
+def is_custom_categories_active() -> bool:
+    """如果用户的 custom_categories 与 DEFAULT_CATEGORY_PRESETS 存在实质性差异，返回 True。
+    比较规则：大类名称集合相同、且每个大类下的子类集合相同，则视为"未自定义"。
+    顺序不影响比较结果。
+    """
+    user_cats = load_settings().get("custom_categories", DEFAULT_CATEGORY_PRESETS)
+    if set(user_cats.keys()) != set(DEFAULT_CATEGORY_PRESETS.keys()):
+        return True
+    return any(
+        set(user_cats.get(c, [])) != set(DEFAULT_CATEGORY_PRESETS[c])
+        for c in DEFAULT_CATEGORY_PRESETS
+    )
+
+
+def get_api_credentials() -> tuple[str, str]:
+    """返回 (api_key, base_url)。api_key 优先读 settings，再回退 ANTHROPIC_API_KEY 环境变量。
+    base_url 为空字符串表示使用 Anthropic 官方端点。"""
+    s = load_settings()
+    api_key = s.get("api_key", "").strip() or os.environ.get("ANTHROPIC_API_KEY", "")
+    base_url = s.get("api_base_url", "").strip()
+    return api_key, base_url
 
 
 def save_settings(settings: dict) -> None:

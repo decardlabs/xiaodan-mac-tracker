@@ -35,7 +35,7 @@ except ImportError:
 try:
     from analyzer import (
         get_report, generate_report, get_monthly_summary, generate_monthly_report,
-        APIDisabledError, APIKeyMissingError,
+        APIDisabledError, APIKeyMissingError, APIResponseFormatError,
     )
 except ImportError:
     def get_report(date_str): return None
@@ -44,6 +44,7 @@ except ImportError:
     def generate_monthly_report(y, m): return None
     class APIDisabledError(Exception): pass
     class APIKeyMissingError(Exception): pass
+    class APIResponseFormatError(Exception): pass
 
 try:
     from report_window import show_report_window
@@ -562,7 +563,6 @@ class XiaoDanDelegate(NSObject):
             self._generating_report  = False   # 防止日报并发生成
             self._generating_monthly = False   # 防止月报并发生成
             self._report_last_error  = None    # None | "disabled" | "no_key" | "failed"
-            self._last_recheck_time  = None    # 每小时触发一次 --recheck-other
             # 从持久化设置加载
             self._chart_mode       = "donut"
             self._wellness_enabled = False
@@ -597,9 +597,6 @@ class XiaoDanDelegate(NSObject):
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             60.0, self, "checkReport:", None, True
         )
-        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            3600.0, self, "checkOtherCategory:", None, True
-        )
         NSDistributedNotificationCenter.defaultCenter() \
             .addObserver_selector_name_object_(
                 self, "onClassifierDone:", "XiaoDanClassifierDone", None
@@ -615,8 +612,8 @@ class XiaoDanDelegate(NSObject):
             self._show_onboarding_flow()
 
     def _show_onboarding_flow(self):
-        # TODO: 下一个任务实现引导窗口 UI
-        print("[onboarding] 首次启动，引导窗口待实现")
+        from onboarding_window import show_onboarding_window
+        show_onboarding_window()
 
     # ── ObjC 可见方法（NSTimer 回调 & NSMenuItem actions） ──────────────────
     def refreshTitle_(self, timer):
@@ -896,14 +893,16 @@ class XiaoDanDelegate(NSObject):
     @objc.python_method
     def _save_settings(self):
         try:
-            from settings import save_settings
-            save_settings({
+            from settings import load_settings, save_settings
+            s = load_settings()
+            s.update({
                 "chart_mode": self._chart_mode,
                 "wellness_enabled": self._wellness_enabled,
                 "report_time": list(self._report_time),
                 "standup_reminder_enabled": self._standup_enabled,
                 "standup_interval_minutes": self._standup_interval,
             })
+            save_settings(s)
         except Exception as e:
             print(f"[ui] settings 保存失败: {e}")
 
@@ -963,6 +962,8 @@ class XiaoDanDelegate(NSObject):
                     self._report_last_error = "disabled"
                 except APIKeyMissingError:
                     self._report_last_error = "no_key"
+                except APIResponseFormatError:
+                    self._report_last_error = "format_error"
                 except Exception:
                     self._report_last_error = "failed"
                 finally:
@@ -985,7 +986,7 @@ class XiaoDanDelegate(NSObject):
                 def _gen_monthly():
                     try:
                         generate_monthly_report(_py, _pm)
-                    except (APIDisabledError, APIKeyMissingError):
+                    except (APIDisabledError, APIKeyMissingError, APIResponseFormatError):
                         pass
                     except Exception as e:
                         print(f"[ui] 月报生成失败: {e}")
@@ -1001,41 +1002,6 @@ class XiaoDanDelegate(NSObject):
             if menu and menu is self._menu:
                 self._build_home_menu(menu)
 
-    def checkOtherCategory_(self, timer):
-        from datetime import date as _date, datetime as _datetime
-        import sqlite3 as _sqlite3, os as _os, subprocess as _subprocess, sys as _sys
-        now = _datetime.now()
-        if (self._last_recheck_time and
-                self._last_recheck_time.date() == now.date() and
-                self._last_recheck_time.hour == now.hour):
-            return
-        db = _os.path.expanduser("~/Library/Application Support/XiaoDan/activity.db")
-        try:
-            conn = _sqlite3.connect(db)
-            row = conn.execute("""
-                SELECT SUM(gap) FROM (
-                    SELECT CAST(
-                        (JULIANDAY(LEAD(timestamp) OVER (ORDER BY timestamp))
-                         - JULIANDAY(timestamp)) * 86400 AS INTEGER
-                    ) as gap, category
-                    FROM activity_log
-                    WHERE date = ? AND activity_type NOT IN ('idle','dock')
-                ) WHERE category LIKE '其他%' AND gap > 0 AND gap <= 600
-            """, (str(_date.today()),)).fetchone()
-            conn.close()
-            total_seconds = row[0] or 0
-        except Exception:
-            return
-        if total_seconds <= 1800:
-            return
-        self._last_recheck_time = now
-        script = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "classifier.py")
-        _subprocess.Popen(
-            [_sys.executable, script, "--recheck-other"],
-            stdout=_subprocess.DEVNULL,
-            stderr=_subprocess.DEVNULL,
-        )
-
     def retryReport_(self, sender):
         target_str = str(self._view_date)
         if self._generating_report:
@@ -1049,6 +1015,8 @@ class XiaoDanDelegate(NSObject):
                 self._report_last_error = "disabled"
             except APIKeyMissingError:
                 self._report_last_error = "no_key"
+            except APIResponseFormatError:
+                self._report_last_error = "format_error"
             except Exception:
                 self._report_last_error = "failed"
             finally:
@@ -1173,6 +1141,18 @@ class XiaoDanDelegate(NSObject):
                 container.addSubview_(_label("未设置 API Key", 55, 22))
                 sub = NSTextField.alloc().initWithFrame_(((0, 30), (260, 18)))
                 sub.setStringValue_("可在设置页填写 Key 后重启生效")
+                sub.setEditable_(False)
+                sub.setSelectable_(False)
+                sub.setBezeled_(False)
+                sub.setDrawsBackground_(False)
+                sub.setFont_(NSFont.systemFontOfSize_(11))
+                sub.setTextColor_(gray)
+                sub.setAlignment_(1)
+                container.addSubview_(sub)
+            elif err == "format_error":
+                container.addSubview_(_label("服务格式不兼容", 55, 22))
+                sub = NSTextField.alloc().initWithFrame_(((0, 30), (260, 18)))
+                sub.setStringValue_("请检查 Base URL 服务是否支持 Anthropic 格式")
                 sub.setEditable_(False)
                 sub.setSelectable_(False)
                 sub.setBezeled_(False)

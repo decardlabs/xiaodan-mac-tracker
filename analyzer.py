@@ -26,7 +26,11 @@ class APIDisabledError(Exception):
 
 
 class APIKeyMissingError(Exception):
-    """api_enabled=True 但未配置 ANTHROPIC_API_KEY。"""
+    """api_enabled=True 但未配置 API Key。"""
+
+
+class APIResponseFormatError(Exception):
+    """服务响应格式不兼容 Anthropic 官方 SDK（通常是第三方代理返回格式与官方不一致）。"""
 
 
 # 与 tracker.py 保持一致：间隔超过此值视为休眠，不计入时长
@@ -195,27 +199,35 @@ def generate_report(date_str: str) -> str | None:
     if activities_text is None:
         return None
 
-    from settings import load_settings
+    from settings import load_settings, get_api_credentials
     if not load_settings().get("api_enabled", True):
         raise APIDisabledError()
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key, base_url = get_api_credentials()
     if not api_key:
-        raise APIKeyMissingError("未设置 ANTHROPIC_API_KEY")
+        raise APIKeyMissingError("未配置 API Key")
 
-    client = anthropic.Anthropic(api_key=api_key)
-    msg = client.messages.create(
-        model=MODEL,
-        max_tokens=300,
-        system=SYSTEM_PROMPT,
-        messages=[{
-            "role": "user",
-            "content": f"这是我今天（{date_str}）的电脑使用记录：\n\n{activities_text}",
-        }],
-    )
-    content = next(
-        (blk.text for blk in msg.content if hasattr(blk, "text")), ""
-    ).strip()
+    client = anthropic.Anthropic(api_key=api_key, **({"base_url": base_url} if base_url else {}))
+    try:
+        msg = client.messages.create(
+            model=MODEL,
+            max_tokens=300,
+            system=SYSTEM_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": f"这是我今天（{date_str}）的电脑使用记录：\n\n{activities_text}",
+            }],
+        )
+        content = next(
+            (blk.text for blk in msg.content if hasattr(blk, "text")), ""
+        ).strip()
+    except (anthropic.AuthenticationError, anthropic.APIConnectionError,
+            anthropic.APITimeoutError, anthropic.APIStatusError):
+        raise  # 已知 API 异常：直接向上传，由调用方处理
+    except anthropic.APIResponseValidationError as e:
+        raise APIResponseFormatError(f"服务响应格式与 Anthropic SDK 不兼容：{e}") from e
+    except Exception as e:
+        raise APIResponseFormatError(f"服务响应解析失败，可能不完全兼容：{e}") from e
     content = content.replace("——", "").replace("～", "").replace("~", "").strip()
 
     save_report(date_str, content)
@@ -787,28 +799,36 @@ def generate_monthly_summary(year: int, month: int) -> str | None:
     if activities_text is None and book_notes_text is None:
         return None
 
-    from settings import load_settings
+    from settings import load_settings, get_api_credentials
     if not load_settings().get("api_enabled", True):
         raise APIDisabledError()
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key, base_url = get_api_credentials()
     if not api_key:
-        raise APIKeyMissingError("未设置 ANTHROPIC_API_KEY")
+        raise APIKeyMissingError("未配置 API Key")
 
     user_msg = f"{year}年{month}月电脑使用记录：\n\n{activities_text or '（无数据）'}"
     if book_notes_text:
         user_msg += f"\n\n本月读书笔记：\n\n{book_notes_text}"
 
-    client = anthropic.Anthropic(api_key=api_key)
-    msg = client.messages.create(
-        model=MODEL,
-        max_tokens=400,
-        system=_MONTHLY_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-    )
-    content = next(
-        (blk.text for blk in msg.content if hasattr(blk, "text")), ""
-    ).strip()
+    client = anthropic.Anthropic(api_key=api_key, **({"base_url": base_url} if base_url else {}))
+    try:
+        msg = client.messages.create(
+            model=MODEL,
+            max_tokens=400,
+            system=_MONTHLY_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        content = next(
+            (blk.text for blk in msg.content if hasattr(blk, "text")), ""
+        ).strip()
+    except (anthropic.AuthenticationError, anthropic.APIConnectionError,
+            anthropic.APITimeoutError, anthropic.APIStatusError):
+        raise
+    except anthropic.APIResponseValidationError as e:
+        raise APIResponseFormatError(f"服务响应格式与 Anthropic SDK 不兼容：{e}") from e
+    except Exception as e:
+        raise APIResponseFormatError(f"服务响应解析失败，可能不完全兼容：{e}") from e
     content = content.replace("——", "").replace("～", "").replace("~", "").strip()
 
     save_monthly_summary(year, month, content)
@@ -911,24 +931,32 @@ def generate_monthly_report(year: int, month: int) -> str | None:
     user_msg = (f"本月数据：\n{this_text}\n\n"
                 f"上月数据（对比参考）：\n{prev_text}")
 
-    from settings import load_settings
+    from settings import load_settings, get_api_credentials
     if not load_settings().get("api_enabled", True):
         raise APIDisabledError()
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key, base_url = get_api_credentials()
     if not api_key:
-        raise APIKeyMissingError("未设置 ANTHROPIC_API_KEY")
+        raise APIKeyMissingError("未配置 API Key")
 
-    client = anthropic.Anthropic(api_key=api_key)
-    msg = client.messages.create(
-        model=MODEL,
-        max_tokens=900,
-        system=_MONTHLY_REPORT_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-    )
-    content = next(
-        (blk.text for blk in msg.content if hasattr(blk, "text")), ""
-    ).strip()
+    client = anthropic.Anthropic(api_key=api_key, **({"base_url": base_url} if base_url else {}))
+    try:
+        msg = client.messages.create(
+            model=MODEL,
+            max_tokens=900,
+            system=_MONTHLY_REPORT_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        content = next(
+            (blk.text for blk in msg.content if hasattr(blk, "text")), ""
+        ).strip()
+    except (anthropic.AuthenticationError, anthropic.APIConnectionError,
+            anthropic.APITimeoutError, anthropic.APIStatusError):
+        raise
+    except anthropic.APIResponseValidationError as e:
+        raise APIResponseFormatError(f"服务响应格式与 Anthropic SDK 不兼容：{e}") from e
+    except Exception as e:
+        raise APIResponseFormatError(f"服务响应解析失败，可能不完全兼容：{e}") from e
     content = content.replace("——", "").replace("～", "").replace("~", "").strip()
 
     save_monthly_summary(year, month, content)

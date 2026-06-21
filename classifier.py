@@ -36,6 +36,42 @@ except ImportError:
     pass  # dotenv 未安装时忽略，env var 仍可手动设置
 
 
+# ── API Key 失效状态（进程内共享，供 report_window 读取）────────────────────────
+_api_key_invalid: bool = False
+
+
+def mark_api_key_invalid() -> None:
+    global _api_key_invalid
+    _api_key_invalid = True
+
+
+def is_api_key_invalid() -> bool:
+    return _api_key_invalid
+
+
+def clear_api_key_invalid() -> None:
+    global _api_key_invalid
+    _api_key_invalid = False
+
+
+# ── 服务格式不兼容状态（进程内共享，供 report_window 读取）─────────────────────
+_api_format_error: bool = False
+
+
+def mark_api_format_error() -> None:
+    global _api_format_error
+    _api_format_error = True
+
+
+def is_api_format_error() -> bool:
+    return _api_format_error
+
+
+def clear_api_format_error() -> None:
+    global _api_format_error
+    _api_format_error = False
+
+
 # ── 配置 ──────────────────────────────────────────────────────────────────────
 DB_PATH = os.path.expanduser("~/Library/Application Support/XiaoDan/activity.db")
 MODEL = "deepseek-v4-flash"  # 代理可用模型（proxy: api.decard.cc）
@@ -108,14 +144,17 @@ _CATEGORY_ALIASES: dict[str, str] = {
 }
 
 
-def normalize_category(cat: str) -> str:
-    """标准化 API 返回的类别字符串。"""
+def normalize_category(cat: str, valid_l1: frozenset | None = None) -> str:
+    """标准化 API 返回的类别字符串。
+    valid_l1: 自定义大类名称集合（使用自定义分类时传入），None 时使用默认白名单。
+    """
     cat = (cat or "").strip()
-    # 修正已知异形
-    cat = _CATEGORY_ALIASES.get(cat, cat)
-    # 必须含至少一个斜杠且一级分类合法
+    l1_set = valid_l1 if valid_l1 is not None else _VALID_L1
+    # 仅在使用默认分类时应用已知别名修正（别名是针对默认类别的）
+    if valid_l1 is None:
+        cat = _CATEGORY_ALIASES.get(cat, cat)
     parts = cat.split("/", 1)
-    if len(parts) < 2 or not parts[1] or parts[0] not in _VALID_L1:
+    if len(parts) < 2 or not parts[1] or parts[0] not in l1_set:
         return "其他/待分类"
     return cat
 
@@ -245,7 +284,9 @@ def save_to_cache(conn: sqlite3.Connection, entries: list[tuple[str, str, str]])
 
 
 # ── API 分类 ──────────────────────────────────────────────────────────────────
-def _parse_api_response(raw: str, keys: list[str]) -> list[str] | None:
+def _parse_api_response(
+    raw: str, keys: list[str], valid_l1: frozenset | None = None
+) -> list[str] | None:
     """解析 API 返回的 JSON，成功返回与 keys 等长的类别列表，失败返回 None。"""
     parsed = json.loads(raw)
     if not isinstance(parsed, list) or len(parsed) != len(keys):
@@ -253,18 +294,40 @@ def _parse_api_response(raw: str, keys: list[str]) -> list[str] | None:
     cats: list[str] = []
     for item in parsed:
         if isinstance(item, str):
-            cats.append(normalize_category(item))
+            cats.append(normalize_category(item, valid_l1=valid_l1))
         elif isinstance(item, dict):
             raw_cat = f"{item.get('一级', '其他')}/{item.get('二级', '待分类')}"
-            cats.append(normalize_category(raw_cat))
+            cats.append(normalize_category(raw_cat, valid_l1=valid_l1))
         else:
             cats.append("其他/待分类")
     return cats
 
 
-def classify_keys_via_api(client: anthropic.Anthropic, keys: list[str]) -> dict[str, str]:
+def _build_custom_system_prompt(custom_categories: dict) -> str:
+    """根据用户自定义分类构造 system prompt。"""
+    lines = []
+    for cat, subs in custom_categories.items():
+        if subs:
+            lines.append(f"  {cat}：{' | '.join(subs)}")
+        else:
+            lines.append(f"  {cat}：（无子分类）")
+    guide = "用户自定义分类标签：\n\n" + "\n".join(lines)
+    return (
+        "你是一个个人时间管理分析助手，对用户的 Mac 上网和应用使用记录分类。\n\n"
+        + guide
+        + "\n\n选择最贴切的子分类，回复格式：JSON 数组，每项对应输入列表中的一条，"
+        '值为"大类/子类"字符串（如"自主学习/编程学习"）。只输出 JSON，不要其他文字。'
+    )
+
+
+def classify_keys_via_api(
+    client: anthropic.Anthropic,
+    keys: list[str],
+    custom_categories: dict | None = None,
+) -> dict[str, str]:
     """
     批量分类域名或应用键，返回 {key: category}。
+    custom_categories: 用户自定义分类（不为 None 时使用自定义 prompt 和类别校验）。
     失败自动重试最多 3 次（间隔 1 秒），全部失败归入「其他/待分类」。
     """
     lines = [
@@ -273,12 +336,19 @@ def classify_keys_via_api(client: anthropic.Anthropic, keys: list[str]) -> dict[
     ]
     prompt = "\n".join(lines)
 
+    if custom_categories is not None:
+        system = _build_custom_system_prompt(custom_categories)
+        valid_l1: frozenset | None = frozenset(custom_categories.keys())
+    else:
+        system = SYSTEM_PROMPT
+        valid_l1 = None
+
     for attempt in range(1, 4):
         try:
             msg = client.messages.create(
                 model=MODEL,
                 max_tokens=512,
-                system=SYSTEM_PROMPT,
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
             )
             # 部分模型（如 DeepSeek）先返回 ThinkingBlock，取第一个 TextBlock
@@ -287,10 +357,20 @@ def classify_keys_via_api(client: anthropic.Anthropic, keys: list[str]) -> dict[
             ).strip()
             if not raw:
                 raise ValueError("API 返回空响应")
-            cats = _parse_api_response(raw, keys)
+            cats = _parse_api_response(raw, keys, valid_l1=valid_l1)
             if cats is not None:
                 return dict(zip(keys, cats))
             print(f"  [警告] 第{attempt}次：返回长度不符")
+        except anthropic.AuthenticationError:
+            mark_api_key_invalid()
+            print("  [错误] API Key 认证失败，分类将回退到默认结果")
+            break  # 认证错误无需重试
+        except anthropic.APIResponseValidationError as e:
+            mark_api_format_error()
+            print(f"  [错误] 服务响应格式异常，可能不兼容 Anthropic SDK：{e}")
+            break  # 格式错误无需重试
+        except (anthropic.APIConnectionError, anthropic.APITimeoutError) as e:
+            print(f"  [警告] 第{attempt}次网络连接失败：{e}")
         except Exception as e:
             print(f"  [警告] 第{attempt}次失败：{e}")
         if attempt < 3:
@@ -303,6 +383,7 @@ def resolve_key_map(
     conn: sqlite3.Connection,
     client: anthropic.Anthropic | None,
     keys: set[str],
+    custom_categories: dict | None = None,
 ) -> dict[str, str]:
     """
     给定一组缓存键，返回 {key: category}。
@@ -331,7 +412,7 @@ def resolve_key_map(
     new_entries: list[tuple[str, str, str]] = []
     for i in range(0, len(unknown), DOMAIN_BATCH):
         batch = unknown[i : i + DOMAIN_BATCH]
-        result = classify_keys_via_api(client, batch)
+        result = classify_keys_via_api(client, batch, custom_categories=custom_categories)
         key_map.update(result)
         new_entries.extend((k, result[k], "api") for k in batch)
 
@@ -383,6 +464,7 @@ def classify_activity_log(
     date: str | None = None,
     since: str | None = None,
     limit: int | None = None,
+    custom_categories: dict | None = None,
 ) -> int:
     records = fetch_unclassified_log(conn, date=date, since=since, limit=limit)
     if not records:
@@ -398,7 +480,7 @@ def classify_activity_log(
         if get_hardcoded_category(domain, r["app_name"], r["activity_type"], r["window_title"], r["url"]) is None:
             keys_for_lookup.add(cache_key(domain, r["app_name"]))
 
-    key_map = resolve_key_map(conn, client, keys_for_lookup)
+    key_map = resolve_key_map(conn, client, keys_for_lookup, custom_categories=custom_categories)
 
     # 应用分类结果
     updates: list[tuple[str, int]] = []
@@ -557,6 +639,7 @@ def recheck_other_category(
     conn: sqlite3.Connection,
     client: "anthropic.Anthropic | None",
     date_str: str | None = None,
+    custom_categories: dict | None = None,
 ) -> int:
     """重新检查 category LIKE '其他%'（排除系统后台）的记录。
     先走更新后的硬编码规则，再对剩余记录强制调 API。
@@ -610,7 +693,7 @@ def recheck_other_category(
         conn.execute("DELETE FROM domain_categories WHERE domain = ?", (k,))
     conn.commit()
 
-    key_map = resolve_key_map(conn, client, keys)
+    key_map = resolve_key_map(conn, client, keys, custom_categories=custom_categories)
 
     api_updates: list[tuple[str, int]] = []
     for rid, app, title, url, atype in remaining:
@@ -633,17 +716,22 @@ def run_classification(date_str: str | None = None, *, use_api: bool = True, rec
     conn = sqlite3.connect(DB_PATH)
     setup_db(conn)
     client = None
+    custom_categories = None
     if use_api:
-        from settings import load_settings
-        if load_settings().get("api_enabled", True):
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
+        from settings import load_settings, is_custom_categories_active, get_api_credentials
+        s = load_settings()
+        if s.get("api_enabled", True):
+            api_key, base_url = get_api_credentials()
             if api_key:
-                client = anthropic.Anthropic(api_key=api_key)
+                client = anthropic.Anthropic(api_key=api_key, **({"base_url": base_url} if base_url else {}))
+            # 第三层判断：只有用户真正自定义了分类，才把自定义标签传给 API
+            if is_custom_categories_active():
+                custom_categories = s.get("custom_categories")
     try:
         if recheck_other:
-            recheck_other_category(conn, client, date_str=date_str)
+            recheck_other_category(conn, client, date_str=date_str, custom_categories=custom_categories)
         else:
-            classify_activity_log(conn, client, date=date_str)
+            classify_activity_log(conn, client, date=date_str, custom_categories=custom_categories)
     finally:
         conn.close()
 
@@ -674,11 +762,12 @@ def main() -> None:
     # 建立 API 客户端（除非 --no-api）
     client = None
     if not args.no_api:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        from settings import get_api_credentials
+        api_key, base_url = get_api_credentials()
         if api_key:
-            client = anthropic.Anthropic(api_key=api_key)
+            client = anthropic.Anthropic(api_key=api_key, **({"base_url": base_url} if base_url else {}))
         else:
-            print("[提示] 未设置 ANTHROPIC_API_KEY，将只使用硬编码规则和缓存（等同于 --no-api）。")
+            print("[提示] 未配置 API Key，将只使用硬编码规则和缓存（等同于 --no-api）。")
 
     if args.recheck_other:
         recheck_other_category(conn, client, date_str=args.date)
