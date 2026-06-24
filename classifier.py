@@ -74,7 +74,7 @@ def clear_api_format_error() -> None:
 
 # ── 配置 ──────────────────────────────────────────────────────────────────────
 DB_PATH = os.path.expanduser("~/Library/Application Support/XiaoDan/activity.db")
-MODEL = "deepseek-v4-flash"  # 代理可用模型（proxy: api.decard.cc）
+MODEL = "deepseek-v4-flash"  # 默认模型名，实际运行时从 settings 读取
 DOMAIN_BATCH = 30            # 每次 API 调用最多分类多少个域名/应用
 COCOA_EPOCH = 978307200      # Cocoa 纪元偏移量（秒），visit_time + 978307200 = Unix 时间戳
 
