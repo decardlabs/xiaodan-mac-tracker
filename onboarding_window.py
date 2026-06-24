@@ -206,6 +206,35 @@ input[type=text]:focus { border-color: #9B72CF; }
   padding: 0;
   text-decoration: underline;
 }
+
+/* ── 自定义确认弹层 ── */
+.xd-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.xd-confirm-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 24px 28px 20px;
+  width: 300px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.12);
+}
+.xd-confirm-msg {
+  font-size: 14px;
+  color: #1C1C1E;
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+.xd-confirm-btns {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
 </style>
 </head>
 <body>
@@ -344,6 +373,39 @@ var state = {
 var _failCount = 0;
 var _needsModelConfirm = false;
 
+/* ── 自定义确认弹层（替代系统原生 confirm()，避免 WKWebView 带系统图标）── */
+function showCustomConfirm(message, onConfirm, onCancel) {
+  var overlay = document.createElement('div');
+  overlay.className = 'xd-confirm-overlay';
+  var card = document.createElement('div');
+  card.className = 'xd-confirm-card';
+  var msg = document.createElement('div');
+  msg.className = 'xd-confirm-msg';
+  msg.textContent = message;
+  var btns = document.createElement('div');
+  btns.className = 'xd-confirm-btns';
+  var cancelBtn = document.createElement('button');
+  cancelBtn.className = 'btn btn-secondary';
+  cancelBtn.textContent = '取消';
+  var okBtn = document.createElement('button');
+  okBtn.className = 'btn btn-primary';
+  okBtn.textContent = '确定';
+  btns.appendChild(cancelBtn);
+  btns.appendChild(okBtn);
+  card.appendChild(msg);
+  card.appendChild(btns);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  cancelBtn.addEventListener('click', function() {
+    document.body.removeChild(overlay);
+    if (onCancel) onCancel();
+  });
+  okBtn.addEventListener('click', function() {
+    document.body.removeChild(overlay);
+    onConfirm();
+  });
+}
+
 /* ═══════════════════════════════════════════
    步骤1：API 开关选择
 ═══════════════════════════════════════════ */
@@ -372,9 +434,9 @@ function step1Next() {
 function step2Next() {
   var key = document.getElementById('api-key-input').value.trim();
   if (!key) {
-    if (confirm('未填写 API Key，将按未开启 AI 处理，继续吗？')) {
+    showCustomConfirm('未填写 API Key，将按未开启 AI 处理，继续吗？', function() {
       xdDone({ api_enabled: false, api_key: '', api_base_url: '', custom_categories: {} });
-    }
+    });
     return;
   }
   // 第二次点击：用户已选/填好模型，进入验证阶段
