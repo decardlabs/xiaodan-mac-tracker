@@ -1,4 +1,4 @@
-# 🥚 小蛋 — Mac 使用时间监控 v0.78
+# 🥚 小蛋 — Mac 使用时间监控 v0.79
 
 本地运行的 macOS 使用时间追踪工具，每 5 秒记录一次你在做什么，数据存在本机 SQLite 数据库，不上传任何信息。
 
@@ -11,6 +11,7 @@
 - **窗口标题获取**：通过 macOS 辅助功能 API 读取精确窗口标题
 - **自动分类**：每 5 分钟对新记录打标签（自主学习 / 学校学习 / 娱乐 / 其他），支持域名规则 + 标题规则 + LLM 兜底
 - **AI 分类开关**：可在报告窗口设置页关闭 LLM 调用（不影响规则分类），断网或节省 API 配额时使用
+- **自定义 API 配置**：支持 Anthropic 官方 Key 或第三方代理（OpenRouter、DeepSeek 等），首次启动时通过引导窗口配置，模型名自动检测
 
 ### 菜单栏 UI
 - 状态栏实时显示今日总时长（或 🥚 待机图标）
@@ -53,13 +54,9 @@
 pip install pyobjc-framework-Cocoa pyobjc-framework-ApplicationServices pyobjc-framework-Quartz
 ```
 
-LLM 分类功能需要设置环境变量（可选，不设置则跳过 AI 分类）：
+LLM 分类功能需要 Anthropic API Key（支持官方或第三方代理）。**首次启动时会弹出引导窗口**，按提示填写即可，无需手动设置环境变量。
 
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-```
-
-也可以在报告窗口的设置页直接关闭「启用 AI 简报」，无需修改环境变量。
+也可在报告窗口的设置页关闭「启用 AI 简报」，或直接在 `settings.json` 中编辑 `api_key` / `api_base_url` / `api_model` 字段。
 
 ## 权限配置
 
@@ -128,10 +125,11 @@ CREATE TABLE activity_log (
 ├── tracker.py              # 后台记录主程序
 ├── ui.py                   # 菜单栏 UI（AppKit）
 ├── report_window.py        # 周报/月报/设置窗口（WKWebView）
+├── onboarding_window.py    # 首次启动引导窗口（API Key 配置，WKWebView）
 ├── classifier.py           # 活动分类引擎
 ├── analyzer.py             # 数据聚合 + LLM 日报/周报/月报
 ├── wellness.py             # 健康提醒数据
-├── settings.py             # 设置持久化（JSON 读写）
+├── settings.py             # 设置持久化（JSON 读写，含 api_model）
 ├── standup_reminder.py     # 起身提醒计时器
 ├── wellness_activities.json
 ├── chart.umd.min.js        # Chart.js 本地副本（WKWebView 离线渲染）

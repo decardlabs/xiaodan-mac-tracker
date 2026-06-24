@@ -1,3 +1,64 @@
+## 2026年6月24日 — v0.79
+
+### 新增功能
+
+**首次启动引导窗口（onboarding_window.py）**
+- 新建 `onboarding_window.py`，基于 WKWebView 的四步骤引导流程
+  - 步骤1：选择是否开启 AI 智能分类（选"否"直接跳过后续步骤）
+  - 步骤2：填写 API Key + Base URL，含两阶段验证
+  - 步骤3：选择活动大类（默认全选，可添加自定义大类）
+  - 步骤4：选择子分类（按大类分区块，可添加自定义子分类）
+- 两阶段验证流程：
+  - Phase 1：调用 `client.models.list()` 自动获取模型列表
+    - 情况 A：自动选中（含 flash/haiku/mini/lite 关键字）→ 直接进入 Phase 2
+    - 情况 B：多个模型但无法自动选 → 展示下拉选择
+    - 情况 C：代理不支持 models 接口 → 手动填写模型名称
+  - Phase 2：用选定模型调用 `client.messages.create()` 验证 key 有效性
+- 连续失败 2 次后显示"暂时跳过 AI 配置"兜底入口
+- 关闭窗口时拦截，弹自定义 NSAlert 确认
+- `settings.json` 新增 `onboarding_completed` 字段，已完成引导的用户不再弹出
+
+**API 模型配置持久化（settings.py + classifier.py + report_window.py）**
+- `settings.py` 新增 `api_model` 字段（默认空串）和 `get_api_model(default)` 函数
+- `classifier.py`：分类 API 调用改用 `get_api_model(default=MODEL)` 读取配置，不再硬编码 `deepseek-v4-flash`
+- `report_window.py`：设置页验证逻辑改用 `api_model`，自动 fallback 到 `models.list()` 再到 `claude-haiku-4-5`
+
+**自定义确认弹层（onboarding_window.py）**
+- 新增 `showCustomConfirm(message, onConfirm, onCancel)` JS 函数
+- 替代系统原生 `confirm()`，WKWebView 里的 `confirm()` 会带无法去除的系统默认图标
+- 视觉：半透明遮罩 + 白色圆角卡片 + `.btn-primary` / `.btn-secondary` 按钮，与引导窗口风格一致
+
+### 修复
+
+**打包环境 SSL 证书路径修复（tracker.py）**
+- 根因：py2app 的 `__boot__.py` 在 tracker.py 执行前调用 `_setup_openssl()`，把 `SSL_CERT_FILE` 预设成不存在的占位路径 `<RESOURCEPATH>/openssl.ca/no-such-file`
+- 症状：打包后 .app 所有 HTTPS 请求（anthropic SDK → httpx → SSL 证书加载）抛 `FileNotFoundError`
+- 修复：`tracker.py` 冻结模式启动时，用 `certifi.__file__` 定位真实 pem 路径，强制赋值覆盖坏值（原用 `setdefault` 无效，因 key 已被 `__boot__.py` 设过）
+- 全局生效：同进程内所有 API 调用（onboarding、classifier、report_window 设置页）均受益
+
+**打包配置（setup.py）**
+- 新增 `onboarding_window` 到 packages 列表（否则 py2app 不打包该模块）
+- 新增 `certifi` 到 packages 列表（保证 `cacert.pem` 随包分发）
+- 版本号升至 0.79
+
+### 当前状态
+
+- tracker 后台记录 ✅
+- classifier 自动分类 + 可配置模型名 ✅
+- 菜单栏 UI（图表 + 目标 + 健康提醒 + 日报）✅
+- 周报/月报（标签栏导航 + 设置页）✅
+- 首次启动引导窗口（四步骤，API Key 两阶段验证）✅
+- 起身提醒（自定义图标弹窗）✅
+- 设置持久化（settings.json，含 api_model）✅
+- py2app 打包 + SSL 证书修复（build.sh 一键打包 + 签名）✅
+
+### 下一步
+
+- Apple Developer 证书正式签名，支持分发
+- 数据导出功能（CSV / JSON）
+
+---
+
 ## 2026年6月14日 — 第三模块
 
 ### 完成内容
