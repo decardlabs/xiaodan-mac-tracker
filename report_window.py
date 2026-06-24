@@ -1434,8 +1434,17 @@ function doSave(){{
             return
         try:
             client = _anthropic.Anthropic(api_key=api_key, base_url=base_url)
+            from settings import load_settings as _ls
+            _model = _ls().get("api_model", "").strip()
+            if not _model:
+                try:
+                    _model = next(iter(m.id for m in client.models.list().data), "")
+                except Exception:
+                    pass
+            if not _model:
+                _model = "claude-haiku-4-5"
             client.messages.create(
-                model="claude-haiku-4-5",
+                model=_model,
                 max_tokens=1,
                 messages=[{"role": "user", "content": "hi"}],
             )

@@ -15,6 +15,19 @@ import fcntl
 import os
 import sys
 import time
+
+# py2app 的 __boot__.py 会在 tracker.py 执行前把 SSL_CERT_FILE/SSL_CERT_DIR 设成
+# 不存在的占位路径（openssl.ca/no-such-file），导致 httpx/anthropic 的所有 HTTPS
+# 请求因找不到证书文件而抛出 FileNotFoundError。必须强制覆盖，不能用 setdefault。
+if getattr(sys, "frozen", False):
+    try:
+        import certifi as _certifi
+        _pem = os.path.join(os.path.dirname(_certifi.__file__), "cacert.pem")
+        if os.path.exists(_pem):
+            os.environ["SSL_CERT_FILE"] = _pem
+            os.environ["REQUESTS_CA_BUNDLE"] = _pem
+    except Exception:
+        pass
 import threading
 import sqlite3
 import subprocess

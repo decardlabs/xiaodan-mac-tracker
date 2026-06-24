@@ -343,10 +343,16 @@ def classify_keys_via_api(
         system = SYSTEM_PROMPT
         valid_l1 = None
 
+    try:
+        from settings import get_api_model
+        model = get_api_model(default=MODEL)
+    except Exception:
+        model = MODEL
+
     for attempt in range(1, 4):
         try:
             msg = client.messages.create(
-                model=MODEL,
+                model=model,
                 max_tokens=512,
                 system=system,
                 messages=[{"role": "user", "content": prompt}],

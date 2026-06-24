@@ -26,6 +26,7 @@ _DEFAULTS = {
     "api_enabled": True,
     "api_key": "",
     "api_base_url": "",
+    "api_model": "",
     "custom_categories": DEFAULT_CATEGORY_PRESETS,
     "onboarding_completed": False,  # 新用户默认 False，触发首次启动引导
 }
@@ -60,6 +61,11 @@ def is_custom_categories_active() -> bool:
         set(user_cats.get(c, [])) != set(DEFAULT_CATEGORY_PRESETS[c])
         for c in DEFAULT_CATEGORY_PRESETS
     )
+
+
+def get_api_model(default: str = "") -> str:
+    """返回配置的模型名。空字符串时返回 default。"""
+    return load_settings().get("api_model", "").strip() or default
 
 
 def get_api_credentials() -> tuple[str, str]:

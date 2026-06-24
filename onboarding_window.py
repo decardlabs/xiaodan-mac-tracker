@@ -182,6 +182,30 @@ input[type=text]:focus { border-color: #9B72CF; }
 .cat-dot { width: 8px; height: 8px; border-radius: 2px; background: #9B72CF; flex-shrink: 0; }
 .cat-body { padding: 0 14px 10px; }
 .cat-body .add-row { margin-top: 8px; }
+
+/* ── 模型选择（步骤2）── */
+.xd-select {
+  width: 100%;
+  border: 1px solid #E0E0E0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  color: #1C1C1E;
+  background: #fff;
+  outline: none;
+}
+.xd-select:focus { border-color: #9B72CF; }
+.btn-link {
+  background: none;
+  border: none;
+  color: #9B72CF;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
 </style>
 </head>
 <body>
@@ -228,11 +252,29 @@ input[type=text]:focus { border-color: #9B72CF; }
   <p class="subtitle">支持 Anthropic 官方 Key，也可配合下方 Base URL 接入 OpenRouter 等代理服务。</p>
 
   <label class="form-label" for="api-key-input">API Key</label>
-  <input type="text" id="api-key-input" placeholder="sk-ant-api03-..." autocomplete="off" spellcheck="false">
+  <input type="text" id="api-key-input" placeholder="sk-ant-api03-..." autocomplete="off" spellcheck="false" oninput="_resetModelSection()">
   <div id="api-key-error" class="error-msg"></div>
 
   <label class="form-label" for="api-base-url-input" style="margin-top:14px;">Base URL（选填）</label>
-  <input type="text" id="api-base-url-input" placeholder="留空使用 Anthropic 官方端点，如 https://openrouter.ai/api/v1" autocomplete="off" spellcheck="false">
+  <input type="text" id="api-base-url-input" placeholder="留空使用 Anthropic 官方端点，如 https://openrouter.ai/api/v1" autocomplete="off" spellcheck="false" oninput="_resetModelSection()">
+
+  <!-- 模型区（检测后显示） -->
+  <div id="model-section" style="display:none; margin-top:14px;">
+    <div id="model-picker" style="display:none;">
+      <label class="form-label">检测到多个可用模型，请选择：</label>
+      <select id="model-select" class="xd-select"></select>
+    </div>
+    <div id="model-manual" style="display:none;">
+      <label class="form-label">未能自动获取模型列表，请填写模型名称：</label>
+      <input type="text" id="model-manual-input" placeholder="例如：deepseek-chat、gpt-4o-mini">
+    </div>
+  </div>
+
+  <!-- 连续失败后显示的跳过提示 -->
+  <div id="skip-api-hint" style="display:none; margin-top:12px; padding-top:12px; border-top:.5px solid #E8E8E8;">
+    <p style="font-size:12px; color:#8E8E93; margin-bottom:6px;">没关系，可以先不配置 AI，随时在设置里重新开启。</p>
+    <button class="btn-link" onclick="skipApiSetup()">暂时跳过 AI 配置</button>
+  </div>
 
   <div class="spacer"></div>
   <div class="footer">
@@ -295,9 +337,12 @@ var state = {
   apiChoice: null,   // true | false
   apiKey: '',
   apiBaseUrl: '',
+  apiModel: '',
   catChecked: {},    // { 大类名: boolean }
   subChecked: {}     // { 大类名: { 子类名: boolean } }
 };
+var _failCount = 0;
+var _needsModelConfirm = false;
 
 /* ═══════════════════════════════════════════
    步骤1：API 开关选择
@@ -327,14 +372,39 @@ function step1Next() {
 function step2Next() {
   var key = document.getElementById('api-key-input').value.trim();
   if (!key) {
-    // 空 key → 提示后视为未开启 API，不进入步骤3
     if (confirm('未填写 API Key，将按未开启 AI 处理，继续吗？')) {
       xdDone({ api_enabled: false, api_key: '', api_base_url: '', custom_categories: {} });
     }
     return;
   }
+  // 第二次点击：用户已选/填好模型，进入验证阶段
+  if (_needsModelConfirm) {
+    var picker = document.getElementById('model-picker');
+    var manual = document.getElementById('model-manual');
+    var model = '';
+    if (picker.style.display !== 'none') {
+      model = document.getElementById('model-select').value;
+    } else if (manual.style.display !== 'none') {
+      model = document.getElementById('model-manual-input').value.trim();
+      if (!model) {
+        var e = document.getElementById('api-key-error');
+        e.textContent = '请填写模型名称';
+        e.classList.add('show');
+        return;
+      }
+    }
+    if (!model) return;
+    _needsModelConfirm = false;
+    var btn = document.querySelector('#step2 .btn-primary');
+    btn.disabled = true;
+    btn.textContent = '正在验证...';
+    document.getElementById('api-key-error').classList.remove('show');
+    _proceedToValidate(model);
+    return;
+  }
+  // 第一次点击：先检测模型
   var baseUrl = document.getElementById('api-base-url-input').value.trim();
-  // 触发 Python 侧异步验证（验证结果通过 window._onKeyValidated 回调）
+  window._setKeyValidating(true);
   window.location.href = 'xd://onboarding_validate_key?key=' + encodeURIComponent(key)
     + '&base_url=' + encodeURIComponent(baseUrl);
 }
@@ -491,7 +561,7 @@ function complete() {
     var subs = state.subChecked[cat] || {};
     result[cat] = Object.keys(subs).filter(function(s) { return subs[s]; });
   });
-  xdDone({ api_enabled: true, api_key: state.apiKey, api_base_url: state.apiBaseUrl, custom_categories: result });
+  xdDone({ api_enabled: true, api_key: state.apiKey, api_base_url: state.apiBaseUrl, api_model: state.apiModel, custom_categories: result });
 }
 
 /* ═══════════════════════════════════════════
@@ -523,16 +593,92 @@ function _setKeyValidating(loading) {
   var errDiv = document.getElementById('api-key-error');
   if (loading) {
     btn.disabled = true;
-    btn.textContent = '验证中...';
+    btn.textContent = '正在检测模型...';
     errDiv.textContent = '';
     errDiv.classList.remove('show');
+    document.getElementById('model-section').style.display = 'none';
+    document.getElementById('skip-api-hint').style.display = 'none';
   } else {
     btn.disabled = false;
     btn.textContent = '确认 →';
   }
 }
 
-// Python 在主线程通过 evaluateJavaScript 调用此函数
+function _resetModelSection() {
+  _needsModelConfirm = false;
+  document.getElementById('model-section').style.display = 'none';
+  document.getElementById('skip-api-hint').style.display = 'none';
+  document.getElementById('api-key-error').classList.remove('show');
+}
+
+function _pickModelByHeuristic(models) {
+  var keywords = ['flash', 'haiku', 'mini', 'lite'];
+  for (var i = 0; i < keywords.length; i++) {
+    for (var j = 0; j < models.length; j++) {
+      if (models[j].toLowerCase().indexOf(keywords[i]) !== -1) return models[j];
+    }
+  }
+  return null;
+}
+
+function _proceedToValidate(model) {
+  state.apiModel = model;
+  var key = document.getElementById('api-key-input').value.trim();
+  var baseUrl = document.getElementById('api-base-url-input').value.trim();
+  window.location.href = 'xd://onboarding_validate_with_model'
+    + '?key=' + encodeURIComponent(key)
+    + '&base_url=' + encodeURIComponent(baseUrl)
+    + '&model=' + encodeURIComponent(model);
+}
+
+// Python 回调：模型检测完成（Phase 1）
+window._onModelsDetected = function(result) {
+  _failCount = 0;
+  if (result.error) {
+    _setKeyValidating(false);
+    var e = document.getElementById('api-key-error');
+    e.textContent = result.error;
+    e.classList.add('show');
+    _failCount = 1;
+    _maybeShowSkipBtn();
+    return;
+  }
+  var models = result.models || [];
+  var section = document.getElementById('model-section');
+  document.getElementById('model-picker').style.display = 'none';
+  document.getElementById('model-manual').style.display = 'none';
+
+  if (models.length === 0) {
+    // 情况 C：手动填写
+    section.style.display = '';
+    document.getElementById('model-manual').style.display = '';
+    _setKeyValidating(false);
+    _needsModelConfirm = true;
+  } else {
+    var chosen = models.length === 1 ? models[0] : _pickModelByHeuristic(models);
+    if (chosen) {
+      // 情况 A：自动选择，直接进入验证
+      var btn = document.querySelector('#step2 .btn-primary');
+      btn.textContent = '正在验证...';
+      _proceedToValidate(chosen);
+    } else {
+      // 情况 B：展示下拉选择
+      section.style.display = '';
+      var sel = document.getElementById('model-select');
+      sel.innerHTML = '';
+      models.forEach(function(m) {
+        var opt = document.createElement('option');
+        opt.value = m; opt.textContent = m;
+        sel.appendChild(opt);
+      });
+      document.getElementById('model-picker').style.display = '';
+      _setKeyValidating(false);
+      _needsModelConfirm = true;
+    }
+  }
+};
+
+// Python 回调：key 验证完成（Phase 2）
 window._onKeyValidated = function(success, errorMsg) {
   _setKeyValidating(false);
   if (success) {
@@ -544,8 +690,18 @@ window._onKeyValidated = function(success, errorMsg) {
     var errDiv = document.getElementById('api-key-error');
     errDiv.textContent = errorMsg;
     errDiv.classList.add('show');
+    _failCount++;
+    _maybeShowSkipBtn();
   }
 };
+
+function _maybeShowSkipBtn() {
+  if (_failCount >= 2) document.getElementById('skip-api-hint').style.display = '';
+}
+
+function skipApiSetup() {
+  xdDone({ api_enabled: false, api_key: '', api_base_url: '', custom_categories: {} });
+}
 
 // 一次性将最终结果传回 Python（整个流程唯一的写入时机）
 function xdDone(payload) {
@@ -670,6 +826,15 @@ class OnboardingWindow(NSObject):
                 target=self._bg_validate_key, args=(key, base_url), daemon=True
             ).start()
 
+        elif action == "onboarding_validate_with_model":
+            key = _str("key")
+            base_url = _str("base_url")
+            model = _str("model")
+            import threading
+            threading.Thread(
+                target=self._bg_validate_with_model, args=(key, base_url, model), daemon=True
+            ).start()
+
         elif action == "onboarding_done":
             payload_str = _str("data")
             try:
@@ -681,19 +846,46 @@ class OnboardingWindow(NSObject):
                 api_enabled=bool(payload.get("api_enabled", False)),
                 api_key=str(payload.get("api_key", "")),
                 api_base_url=str(payload.get("api_base_url", "")),
+                api_model=str(payload.get("api_model", "")),
                 custom_categories=dict(payload.get("custom_categories", {})),
             )
 
     @objc.python_method
     def _bg_validate_key(self, key, base_url=""):
-        """子线程：调用 Anthropic API 验证 key，结果通过 performSelector 切回主线程。"""
+        """子线程 Phase 1：查询可用模型列表，结果通过 performSelector 切回主线程。"""
         try:
             import anthropic
         except ImportError:
-            result = json.dumps({
-                "success": False,
-                "error": "缺少 anthropic 依赖，请运行：pip install anthropic"
-            })
+            result = json.dumps({"models": None, "error": "缺少 anthropic 依赖，请运行：pip install anthropic"})
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "onModelsDetected:", result, False
+            )
+            return
+        try:
+            client = anthropic.Anthropic(api_key=key, **({"base_url": base_url} if base_url else {}))
+            resp = client.models.list()
+            models = [m.id for m in resp.data]
+            result = json.dumps({"models": models, "error": ""})
+        except anthropic.AuthenticationError:
+            error = "该地址下 API Key 认证失败，请检查 Key 与 Base URL 是否匹配" if base_url else "API Key 无效，请检查后重新输入"
+            result = json.dumps({"models": None, "error": error})
+        except (anthropic.APIConnectionError, anthropic.APITimeoutError):
+            error = "无法连接到该地址，请检查 Base URL 是否正确" if base_url else "网络连接失败，请检查网络后重试"
+            result = json.dumps({"models": None, "error": error})
+        except Exception:
+            # 代理不支持 models 接口 → 情况 C，让用户手动填写
+            result = json.dumps({"models": [], "error": ""})
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "onModelsDetected:", result, False
+        )
+
+    @objc.python_method
+    def _bg_validate_with_model(self, key, base_url, model):
+        """子线程 Phase 2：用指定模型名验证 key 有效性，结果通过 performSelector 切回主线程。"""
+        try:
+            import anthropic
+        except ImportError:
+            result = json.dumps({"success": False, "error": "缺少 anthropic 依赖"})
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "onKeyValidated:", result, False
             )
@@ -701,39 +893,41 @@ class OnboardingWindow(NSObject):
         try:
             client = anthropic.Anthropic(api_key=key, **({"base_url": base_url} if base_url else {}))
             client.messages.create(
-                model="claude-haiku-4-5",
+                model=model,
                 max_tokens=1,
                 messages=[{"role": "user", "content": "hi"}]
             )
             result = json.dumps({"success": True, "error": ""})
         except anthropic.AuthenticationError:
-            if base_url:
-                error = "该地址下 API Key 认证失败，请检查 Key 与 Base URL 是否匹配"
-            else:
-                error = "API Key 无效，请检查后重新输入"
+            error = "该地址下 API Key 认证失败，请检查 Key 与 Base URL 是否匹配" if base_url else "API Key 无效，请检查后重新输入"
             result = json.dumps({"success": False, "error": error})
         except anthropic.RateLimitError:
-            # Key is authenticated but rate-limited — counts as valid
             result = json.dumps({"success": True, "error": ""})
         except (anthropic.APIConnectionError, anthropic.APITimeoutError):
-            if base_url:
-                error = "无法连接到该地址，请检查 Base URL 是否正确"
-            else:
-                error = "网络连接失败，请检查网络后重试"
+            error = "无法连接到该地址，请检查 Base URL 是否正确" if base_url else "网络连接失败，请检查网络后重试"
             result = json.dumps({"success": False, "error": error})
         except anthropic.APIResponseValidationError:
-            result = json.dumps({
-                "success": False,
-                "error": "服务返回格式与 Anthropic SDK 不兼容，请确认服务商是否支持 Anthropic 官方格式"
-            })
-        except Exception:
-            result = json.dumps({"success": False, "error": "验证失败，请稍后重试"})
+            result = json.dumps({"success": False, "error": "服务返回格式与 Anthropic SDK 不兼容，请确认服务商是否支持 Anthropic 官方格式"})
+        except Exception as _e:
+            result = json.dumps({"success": False, "error": f"验证失败：{type(_e).__name__}: {_e}"})
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "onKeyValidated:", result, False
         )
 
+    def onModelsDetected_(self, result_json):
+        """主线程 ObjC 方法：接收模型列表检测结果并更新 WKWebView（Phase 1 回调）。"""
+        try:
+            data = json.loads(str(result_json))
+        except Exception:
+            data = {"models": [], "error": "解析失败"}
+        js = "window._onModelsDetected({})".format(
+            json.dumps(data, ensure_ascii=False)
+        )
+        if self._webview:
+            self._webview.evaluateJavaScript_completionHandler_(js, None)
+
     def onKeyValidated_(self, result_json):
-        """主线程 ObjC 方法：接收验证结果并更新 WKWebView。"""
+        """主线程 ObjC 方法：接收验证结果并更新 WKWebView（Phase 2 回调）。"""
         try:
             data = json.loads(str(result_json))
             success = data.get("success", False)
@@ -749,7 +943,7 @@ class OnboardingWindow(NSObject):
             self._webview.evaluateJavaScript_completionHandler_(js, None)
 
     @objc.python_method
-    def _finish(self, api_enabled: bool, api_key: str, api_base_url: str = "", custom_categories: dict = None):
+    def _finish(self, api_enabled: bool, api_key: str, api_base_url: str = "", api_model: str = "", custom_categories: dict = None):
         """将整个引导流程的最终结果一次性写入 settings。"""
         if custom_categories is None:
             custom_categories = {}
@@ -759,6 +953,8 @@ class OnboardingWindow(NSObject):
         if api_key:
             s["api_key"] = api_key
             s["api_base_url"] = api_base_url  # 空字符串表示使用官方端点
+            if api_model:
+                s["api_model"] = api_model
         if custom_categories:
             s["custom_categories"] = custom_categories
         save_settings(s)
