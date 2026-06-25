@@ -1,5 +1,7 @@
 # 🥚 小蛋 — Mac 使用时间监控 v0.79
 
+[English README](README_EN.md)
+
 本地运行的 macOS 使用时间追踪工具，每 5 秒记录一次你在做什么，数据存在本机 SQLite 数据库，不上传任何信息。
 
 ## 功能
