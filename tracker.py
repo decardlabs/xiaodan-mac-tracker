@@ -66,8 +66,8 @@ except ImportError:
 
 
 # ── 配置 ──────────────────────────────────────────────────────────────────────
-POLL_INTERVAL = 5        # 检测间隔（秒）
-SLEEP_DETECT_THRESHOLD = POLL_INTERVAL * 120  # 间隔超过此值视为系统休眠（10分钟）
+POLL_INTERVAL = 10       # 检测间隔（秒）
+SLEEP_DETECT_THRESHOLD = 600  # 间隔超过此值视为系统休眠（10分钟），与 POLL_INTERVAL 独立
 DEBUG = True             # 开启后，Dock 检测时额外打印鼠标坐标和窗口信息
 
 # 用户数据目录（macOS 标准位置）
@@ -101,6 +101,10 @@ MUSIC_SITE_PATTERNS = (
     "music.163.com",
     "y.qq.com",
 )
+
+# 浏览器 URL 缓存：避免每轮重复调用 osascript
+# 浏览器 URL 缓存：((browser_name, window_title), (url, page_title))，None 表示无缓存
+_browser_url_cache: tuple | None = None
 
 # AX 属性名（直接用字符串常量，兼容所有 pyobjc 版本）
 _AX_FOCUSED_WINDOW = "AXFocusedWindow"
@@ -326,7 +330,16 @@ def detect_main_activity(
     # 用 bundle ID 判断浏览器，避免中文系统名匹配失败
     browser_name = BROWSER_BUNDLE_IDS.get(bundle_id) if bundle_id else None
     if browser_name:
-        url, page_title = get_browser_active_tab(browser_name)
+        # 浏览器 URL 缓存：同浏览器 + 同窗口标题时跳过 AppleScript
+        global _browser_url_cache
+        cache_key = (browser_name, window_title)
+        if (_browser_url_cache and _browser_url_cache[0] == cache_key
+                and window_title is not None):
+            _url, _page_title = _browser_url_cache[1]
+            url, page_title = _url, _page_title
+        else:
+            url, page_title = get_browser_active_tab(browser_name)
+            _browser_url_cache = (cache_key, (url, page_title))
         label = page_title or window_title or app_name
 
         if url:
@@ -817,6 +830,11 @@ def tracking_loop(conn: sqlite3.Connection) -> None:
             record_counter += 1
             if record_counter >= 60:
                 record_counter = 0
+                # 定期 WAL checkpoint，防止 WAL 无限增长影响读取性能
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except Exception:
+                    pass
                 if not _classifier_running:
                     _classifier_running = True
                     _today = date.today()
