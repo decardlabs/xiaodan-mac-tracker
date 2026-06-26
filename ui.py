@@ -53,6 +53,14 @@ except ImportError:
 
 from tracker import get_category_stats, POLL_INTERVAL, APP_SUPPORT_DIR
 
+# 分类建议
+try:
+    from classifier import get_pending_suggestions, accept_suggestion, reclassify_suggestion
+except ImportError:
+    def get_pending_suggestions(conn): return []
+    def accept_suggestion(conn, key): pass
+    def reclassify_suggestion(conn, key, cat, exp=""): pass
+
 
 # ── 图表常量 & UI 辅助 ────────────────────────────────────────────────────────
 
@@ -624,7 +632,10 @@ class XiaoDanDelegate(NSObject):
             stats = get_category_stats(self._conn, today_str)
             total = sum(v["total"] for v in stats.values())
             self._status_item.button().setTitle_(_fmt_dur(total) if total > 0 else "小蛋")
-        except Exception:
+        except Exception as e:
+            import traceback
+            print(f"[XiaoDan] refreshTitle error: {e}", file=sys.stderr)
+            traceback.print_exc()
             self._status_item.button().setTitle_("🥚")
 
     def showHome_(self, sender):
@@ -1036,6 +1047,21 @@ class XiaoDanDelegate(NSObject):
     def showSettings_(self, sender):
         self._show_settings()
 
+    def acceptSuggestion_(self, sender):
+        """接受分类建议。"""
+        key = sender.representedObject()
+        if key and self._conn:
+            accept_suggestion(self._conn, key)
+            self._show_home()
+
+    def reclassifyTo_(self, sender):
+        """用户选择其他分类。"""
+        obj = sender.representedObject()
+        if obj and self._conn:
+            key, new_cat = obj
+            reclassify_suggestion(self._conn, key, new_cat)
+            self._show_home()
+
     def menuWillOpen_(self, menu):
         if getattr(self, "_menu", None) is menu:
             self._build_home_menu(menu)
@@ -1053,6 +1079,101 @@ class XiaoDanDelegate(NSObject):
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.0, self, "reopenMenu:", None, False
         )
+
+    @objc.python_method
+    def _build_suggestions_menu(self, menu):
+        """在菜单中添加分类建议区（如果有待处理的建议）。"""
+        try:
+            if not self._conn:
+                return
+            suggestions = get_pending_suggestions(self._conn)
+        except Exception:
+            return
+        if not suggestions:
+            return
+
+        # import settings for available categories
+        try:
+            from settings import load_settings, DEFAULT_CATEGORY_PRESETS
+            s = load_settings()
+            cats = s.get("custom_categories", DEFAULT_CATEGORY_PRESETS)
+        except Exception:
+            cats = {}
+
+        menu.addItem_(NSMenuItem.separatorItem())
+
+        # Header
+        header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            f"分类建议 ({len(suggestions)})", None, ""
+        )
+        header.setEnabled_(False)
+        menu.addItem_(header)
+
+        for s in suggestions[:10]:  # 最多显示 10 条
+            key = s["key"]
+            dom = key[4:] if key.startswith("app:") else key
+            cat = s["category"]
+            expl = s.get("explanation", "")
+
+            # 主条目：显示域名 + 建议类别
+            label = f"  {dom[:22]}: {cat}"
+            if expl:
+                label += f" · {expl[:30]}"
+            item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(label, None, "")
+            item.setTarget_(self)
+
+            # 建子菜单
+            sub = NSMenu.alloc().init()
+
+            # 理由（禁用）
+            reason = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                f"建议: {cat}" + (f" · {expl}" if expl else ""), None, ""
+            )
+            reason.setEnabled_(False)
+            sub.addItem_(reason)
+            sub.addItem_(NSMenuItem.separatorItem())
+
+            # 接受
+            accept = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "✓ 接受建议", "acceptSuggestion:", ""
+            )
+            accept.setTarget_(self)
+            accept.setRepresentedObject_(key)
+            sub.addItem_(accept)
+
+            # 选择其他分类
+            change = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "选择其他分类 →", None, ""
+            )
+            cat_sub = NSMenu.alloc().init()
+            for l1, subs in cats.items():
+                if not subs:
+                    ci = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                        f"{l1}", "reclassifyTo:", ""
+                    )
+                    ci.setTarget_(self)
+                    ci.setRepresentedObject_((key, f"{l1}/其他"))
+                    cat_sub.addItem_(ci)
+                else:
+                    l1_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                        l1, None, ""
+                    )
+                    l1_sub = NSMenu.alloc().init()
+                    for sub_cat in subs:
+                        full_cat = f"{l1}/{sub_cat}"
+                        ci = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                            sub_cat, "reclassifyTo:", ""
+                        )
+                        ci.setTarget_(self)
+                        ci.setRepresentedObject_((key, full_cat))
+                        l1_sub.addItem_(ci)
+                    l1_item.setSubmenu_(l1_sub)
+                    cat_sub.addItem_(l1_item)
+            change.setSubmenu_(cat_sub)
+            sub.addItem_(change)
+
+            item.setSubmenu_(sub)
+            menu.addItem_(item)
 
     @objc.python_method
     def _show_brief(self):
@@ -1178,8 +1299,15 @@ class XiaoDanDelegate(NSObject):
     # ── 菜单构建 ─────────────────────────────────────────────────────────────
     @objc.python_method
     def _build_home_menu(self, menu=None):
-        stats = self._get_stats()
-        total = sum(v["total"] for v in stats.values())
+        try:
+            stats = self._get_stats()
+            total = sum(v["total"] for v in stats.values())
+        except Exception as e:
+            import traceback
+            print(f"[XiaoDan] _build_home_menu stats error: {e}", file=sys.stderr)
+            traceback.print_exc()
+            stats = {}
+            total = 0
         if menu is None:
             menu = NSMenu.alloc().init()
             menu.setAutoenablesItems_(False)
@@ -1265,6 +1393,9 @@ class XiaoDanDelegate(NSObject):
                 w_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("", None, "")
                 w_item.setView_(wv)
                 menu.addItem_(w_item)
+
+        # 分类建议区
+        self._build_suggestions_menu(menu)
 
         menu.addItem_(NSMenuItem.separatorItem())
 

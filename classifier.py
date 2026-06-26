@@ -129,7 +129,7 @@ SYSTEM_PROMPT = f"""你是一个个人时间管理分析助手，对用户的 Ma
 {CATEGORIES_GUIDE}
 
 选择最贴切的二级类别，回复格式：JSON 数组，每项对应输入列表中的一条，\
-值为"一级/二级"字符串（如"自主学习/编程学习"）。只输出 JSON，不要其他文字。"""
+每条为 {{"类别": "一级/二级", "理由": "一句话说明"}}。理由用中文 10-20 字。只输出 JSON。"""
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -153,6 +153,12 @@ def normalize_category(cat: str, valid_l1: frozenset | None = None) -> str:
     # 仅在使用默认分类时应用已知别名修正（别名是针对默认类别的）
     if valid_l1 is None:
         cat = _CATEGORY_ALIASES.get(cat, cat)
+    # 自定义分类的大类名可能包含 "/"（如 "工作/项目"），用前缀匹配而非 split
+    if valid_l1 is not None:
+        matched = any(cat.startswith(l1 + "/") for l1 in valid_l1)
+        if not matched:
+            return "其他/待分类"
+        return cat
     parts = cat.split("/", 1)
     if len(parts) < 2 or not parts[1] or parts[0] not in l1_set:
         return "其他/待分类"
@@ -287,8 +293,17 @@ def save_to_cache(conn: sqlite3.Connection, entries: list[tuple[str, str, str]])
 def _parse_api_response(
     raw: str, keys: list[str], valid_l1: frozenset | None = None
 ) -> list[str] | None:
-    """解析 API 返回的 JSON，成功返回与 keys 等长的类别列表，失败返回 None。"""
-    parsed = json.loads(raw)
+    """解析 API 返回的 JSON，成功返回与 keys 等长的类别列表，失败返回 None。
+
+    支持三种格式（按优先级）：
+      1. [{"类别":"一级/二级", "理由":"..."}, ...]  — 新格式含理由
+      2. [{"一级":"...", "二级":"..."}, ...]         — 旧 dict 格式
+      3. ["一级/二级", ...]                           — 旧 string 格式
+    """
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
     if not isinstance(parsed, list) or len(parsed) != len(keys):
         return None
     cats: list[str] = []
@@ -296,11 +311,32 @@ def _parse_api_response(
         if isinstance(item, str):
             cats.append(normalize_category(item, valid_l1=valid_l1))
         elif isinstance(item, dict):
-            raw_cat = f"{item.get('一级', '其他')}/{item.get('二级', '待分类')}"
+            # 优先使用 "类别" 键（含理由的新格式）
+            if "类别" in item:
+                raw_cat = str(item["类别"])
+            else:
+                raw_cat = f"{item.get('一级', '其他')}/{item.get('二级', '待分类')}"
             cats.append(normalize_category(raw_cat, valid_l1=valid_l1))
         else:
             cats.append("其他/待分类")
     return cats
+
+
+def _extract_explanations(raw: str, keys: list[str]) -> list[str | None] | None:
+    """从新格式 API 响应中提取理由列表。与 keys 等长，无理由的条目为 None。"""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list) or len(parsed) != len(keys):
+        return None
+    result: list[str | None] = []
+    for item in parsed:
+        if isinstance(item, dict) and "理由" in item:
+            result.append(str(item["理由"]).strip() or None)
+        else:
+            result.append(None)
+    return result
 
 
 def _build_custom_system_prompt(custom_categories: dict) -> str:
@@ -316,7 +352,7 @@ def _build_custom_system_prompt(custom_categories: dict) -> str:
         "你是一个个人时间管理分析助手，对用户的 Mac 上网和应用使用记录分类。\n\n"
         + guide
         + "\n\n选择最贴切的子分类，回复格式：JSON 数组，每项对应输入列表中的一条，"
-        '值为"大类/子类"字符串（如"自主学习/编程学习"）。只输出 JSON，不要其他文字。'
+        '每条为 {"类别": "大类/子类", "理由": "一句话说明"}。理由用中文 10-20 字。只输出 JSON。'
     )
 
 
@@ -324,9 +360,11 @@ def classify_keys_via_api(
     client: anthropic.Anthropic,
     keys: list[str],
     custom_categories: dict | None = None,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, str | None]]:
     """
-    批量分类域名或应用键，返回 {key: category}。
+    批量分类域名或应用键，返回 (category_dict, explanation_dict)。
+    category_dict: {key: "一级/二级"}
+    explanation_dict: {key: "理由" | None}
     custom_categories: 用户自定义分类（不为 None 时使用自定义 prompt 和类别校验）。
     失败自动重试最多 3 次（间隔 1 秒），全部失败归入「其他/待分类」。
     """
@@ -365,7 +403,11 @@ def classify_keys_via_api(
                 raise ValueError("API 返回空响应")
             cats = _parse_api_response(raw, keys, valid_l1=valid_l1)
             if cats is not None:
-                return dict(zip(keys, cats))
+                exps = _extract_explanations(raw, keys)
+                exp_map: dict[str, str | None] = {}
+                for k, e in zip(keys, exps) if exps else zip(keys, [None] * len(keys)):
+                    exp_map[k] = e
+                return dict(zip(keys, cats)), exp_map
             print(f"  [警告] 第{attempt}次：返回长度不符")
         except anthropic.AuthenticationError:
             mark_api_key_invalid()
@@ -382,7 +424,8 @@ def classify_keys_via_api(
         if attempt < 3:
             time.sleep(1)
 
-    return {k: "其他/待分类" for k in keys}
+    fallback_cats = {k: "其他/待分类" for k in keys}
+    return fallback_cats, {k: None for k in keys}
 
 
 def resolve_key_map(
@@ -390,42 +433,139 @@ def resolve_key_map(
     client: anthropic.Anthropic | None,
     keys: set[str],
     custom_categories: dict | None = None,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, str | None]]:
     """
-    给定一组缓存键，返回 {key: category}。
+    给定一组缓存键，返回 (key→category, key→explanation)。
     顺序：DB 缓存 → API（批量）。
     硬编码的键不应出现在 keys 里（由调用方提前过滤）。
     """
     key_map: dict[str, str] = {}
+    exp_map: dict[str, str | None] = {}
     unknown: list[str] = []
 
     for key in keys:
         cached = get_cached(conn, key)
         if cached:
             key_map[key] = cached
+            exp_map[key] = None  # 缓存条目暂存无理由
         else:
             unknown.append(key)
 
     if not unknown:
-        return key_map
+        return key_map, exp_map
 
     if client is None:
         for k in unknown:
             key_map[k] = "其他/待分类"
-        return key_map
+            exp_map[k] = None
+        return key_map, exp_map
 
     print(f"  [API] {len(unknown)} 个新域名/应用待分类…")
-    new_entries: list[tuple[str, str, str]] = []
+    new_entries: list[tuple[str, str, str, str]] = []  # (key, category, source, explanation)
     for i in range(0, len(unknown), DOMAIN_BATCH):
         batch = unknown[i : i + DOMAIN_BATCH]
-        result = classify_keys_via_api(client, batch, custom_categories=custom_categories)
-        key_map.update(result)
-        new_entries.extend((k, result[k], "api") for k in batch)
+        result_cats, result_exps = classify_keys_via_api(client, batch, custom_categories=custom_categories)
+        key_map.update(result_cats)
+        exp_map.update(result_exps)
+        for k in batch:
+            new_entries.append((k, result_cats[k], "api", result_exps.get(k, "") or ""))
 
     if new_entries:
-        save_to_cache(conn, new_entries)
+        _save_cache_with_explanations(conn, new_entries)
 
-    return key_map
+    return key_map, exp_map
+
+
+def _save_cache_with_explanations(
+    conn: sqlite3.Connection,
+    entries: list[tuple[str, str, str, str]],
+) -> None:
+    """entries: [(key, category, source, explanation), ...]
+    先确保 domain_categories 表有 explanation 列。
+    """
+    _ensure_domain_categories_schema(conn)
+    conn.executemany(
+        "INSERT OR REPLACE INTO domain_categories (domain, category, source, explanation, suggested_at) "
+        "VALUES (?, ?, ?, ?, datetime('now', 'localtime'))",
+        [(k, cat, src, exp) for k, cat, src, exp in entries],
+    )
+    conn.commit()
+
+
+# ── Schema 迁移 ──────────────────────────────────────────────────────────────
+def _ensure_domain_categories_schema(conn: sqlite3.Connection) -> None:
+    """确保 domain_categories 表包含所有新列，兼容旧数据库。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(domain_categories)")}
+    for col, dtype in [("explanation", "TEXT DEFAULT ''"),
+                       ("user_overridden", "INTEGER DEFAULT 0"),
+                       ("suggested_at", "TEXT DEFAULT ''")]:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE domain_categories ADD COLUMN {col} {dtype}")
+    # 迁移旧 API 条目：把 source='api' 且 user_overridden IS NULL 的旧记录设为 user_overridden=0
+    # （SQLite ALTER 加的 DEFAULT 只对新行生效，旧行 user_overridden 仍为 NULL）
+    conn.execute(
+        "UPDATE domain_categories SET explanation = '', user_overridden = 0, "
+        "suggested_at = COALESCE(suggested_at, datetime('now', 'localtime')) "
+        "WHERE source = 'api' AND user_overridden IS NULL"
+    )
+    conn.commit()
+
+
+# ── 建议/重分类 API ──────────────────────────────────────────────────────────
+def get_pending_suggestions(conn: sqlite3.Connection) -> list[dict]:
+    """返回所有未处理的分类建议（user_overridden=0 的 API 分类结果）。
+    每个条目: {key, category, explanation, suggested_at}。
+    """
+    _ensure_domain_categories_schema(conn)
+    rows = conn.execute(
+        "SELECT domain, category, explanation, suggested_at "
+        "FROM domain_categories "
+        "WHERE source = 'api' AND user_overridden = 0 "
+        "ORDER BY suggested_at DESC"
+    ).fetchall()
+    return [
+        {"key": r[0], "category": r[1], "explanation": r[2] or "", "suggested_at": r[3]}
+        for r in rows
+    ]
+
+
+def accept_suggestion(conn: sqlite3.Connection, key: str) -> None:
+    """接受建议：标记 user_overridden=1，后续自动分类跳过此条目。"""
+    conn.execute("UPDATE domain_categories SET user_overridden = 1 WHERE domain = ?", (key,))
+    conn.commit()
+
+
+def reclassify_suggestion(
+    conn: sqlite3.Connection,
+    key: str,
+    new_category: str,
+    explanation: str = "",
+) -> None:
+    """用户手动重分类：更新 category + 标记 user_overridden=1。
+    同时更新 activity_log 中该域名/应用的所有历史记录的 category 字段。
+    """
+    _ensure_domain_categories_schema(conn)
+
+    conn.execute(
+        "INSERT OR REPLACE INTO domain_categories (domain, category, source, explanation, user_overridden, suggested_at) "
+        "VALUES (?, ?, 'user', ?, 1, datetime('now', 'localtime'))",
+        (key, new_category, explanation),
+    )
+
+    # 追溯更新 activity_log
+    if key.startswith("app:"):
+        app_name = key[4:]
+        conn.execute(
+            "UPDATE activity_log SET category = ? WHERE app_name = ?",
+            (new_category, app_name),
+        )
+    else:
+        # 域名匹配：直接用 domain 或 url LIKE %domain%
+        conn.execute(
+            "UPDATE activity_log SET category = ? WHERE url LIKE ?",
+            (new_category, f"%{key}%"),
+        )
+    conn.commit()
 
 
 # ── 活动日志分类 ──────────────────────────────────────────────────────────────
@@ -486,7 +626,7 @@ def classify_activity_log(
         if get_hardcoded_category(domain, r["app_name"], r["activity_type"], r["window_title"], r["url"]) is None:
             keys_for_lookup.add(cache_key(domain, r["app_name"]))
 
-    key_map = resolve_key_map(conn, client, keys_for_lookup, custom_categories=custom_categories)
+    key_map, _ = resolve_key_map(conn, client, keys_for_lookup, custom_categories=custom_categories)
 
     # 应用分类结果
     updates: list[tuple[str, int]] = []
@@ -593,7 +733,7 @@ def import_safari_history(
         if get_hardcoded_category(domain, "", "browser", url=r["url"]) is None:
             keys_for_lookup.add(cache_key(domain, ""))
 
-    key_map = resolve_key_map(conn, client, keys_for_lookup)
+    key_map, _ = resolve_key_map(conn, client, keys_for_lookup)
 
     updates: list[tuple[str, int]] = []
     for r in records:
@@ -699,7 +839,7 @@ def recheck_other_category(
         conn.execute("DELETE FROM domain_categories WHERE domain = ?", (k,))
     conn.commit()
 
-    key_map = resolve_key_map(conn, client, keys, custom_categories=custom_categories)
+    key_map, _ = resolve_key_map(conn, client, keys, custom_categories=custom_categories)
 
     api_updates: list[tuple[str, int]] = []
     for rid, app, title, url, atype in remaining:
@@ -721,6 +861,7 @@ def run_classification(date_str: str | None = None, *, use_api: bool = True, rec
     """同进程调用入口，供 tracker.py 在后台线程中调用，避免 .app 包内路径问题。"""
     conn = sqlite3.connect(DB_PATH)
     setup_db(conn)
+    _ensure_domain_categories_schema(conn)
     client = None
     custom_categories = None
     if use_api:
